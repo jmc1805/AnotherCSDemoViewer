@@ -1,0 +1,1045 @@
+{% extends "_shell.html" %}
+{% block title %}CS2 Stats - Dashboard{% endblock %}
+
+{% block head %}
+<style>
+    /* ── Top bar (title + upload) ── */
+    .topbar {
+        background: var(--surface); border-bottom: 1px solid var(--border);
+        display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+        padding: 12px 24px; position: sticky; top: 0; z-index: 90;
+    }
+    .topbar-title {
+        font-size: 18px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase;
+        color: white;
+    }
+    .topbar-count { font-family: var(--font-mono); font-size: 11px; color: var(--dim); }
+    .topbar-spacer { flex: 1; }
+    #upload-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    input[type="file"] {
+        background: var(--panel); border: 1px solid var(--border); color: var(--text);
+        padding: 6px 10px; font-family: var(--font-ui); font-size: 12px;
+        cursor: pointer; max-width: 300px;
+    }
+    input[type="file"]::file-selector-button {
+        background: var(--border); border: none; color: var(--text);
+        font-family: var(--font-ui); font-weight: 700; font-size: 12px;
+        letter-spacing: 1px; padding: 4px 10px; cursor: pointer; margin-right: 10px; text-transform: uppercase;
+    }
+
+    /* ── Upload queue ── */
+    #upload-queue {
+        background: var(--surface); border-bottom: 1px solid var(--border);
+        padding: 8px 24px 12px; display: none; flex-direction: column; gap: 5px;
+    }
+    .queue-item { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .queue-filename {
+        flex: 0 1 280px; font-family: var(--font-mono); font-size: 11px; color: var(--text);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* The bar is the status: the stage name sits inside it so one glance gives
+       both how far along the match is and what it is doing. overflow:hidden is
+       what keeps the fill inside the rounded shell. */
+    .queue-bar {
+        flex: 1 1 220px; max-width: 720px; position: relative; height: 18px;
+        background: var(--bg); border: 1px solid var(--border);
+        border-radius: var(--radius-xs); overflow: hidden;
+    }
+    .queue-fill {
+        position: absolute; top: 0; bottom: 0; left: 0; width: 0;
+        background: rgba(0, 194, 255, 0.20); border-right: 1px solid var(--accent);
+        transition: width 0.3s linear;
+    }
+    .queue-label {
+        position: absolute; inset: 0; display: flex; align-items: center;
+        justify-content: center; gap: 8px; white-space: nowrap;
+        font-family: var(--font-ui); font-size: 9px; letter-spacing: 2px;
+        text-transform: uppercase; color: var(--text);
+    }
+    .queue-label .pct { font-family: var(--font-mono); letter-spacing: 0; color: var(--dimmer); }
+    .queue-eta {
+        flex: 0 0 88px; text-align: right; font-family: var(--font-mono);
+        font-size: 10px; color: var(--dimmer); white-space: nowrap;
+    }
+    /* A parse that reports no fraction at all (a demo whose size could not be
+       read) must not look frozen, so the bar sweeps instead of standing still. */
+    .queue-bar.indet .queue-fill {
+        width: 34%; border-right: none;
+        animation: queue-sweep 1.2s ease-in-out infinite;
+    }
+    @keyframes queue-sweep {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(300%); }
+    }
+    .queue-item.done  .queue-fill { background: rgba(61, 220, 132, 0.20); border-right-color: var(--win); }
+    .queue-item.done  .queue-label { color: var(--win); }
+    .queue-item.error .queue-fill { background: rgba(255, 68, 85, 0.20); border-right-color: var(--loss); }
+    .queue-item.error .queue-label { color: var(--loss); }
+    .queue-item.error .queue-bar  { cursor: help; }
+    @media (max-width: 700px) {
+        .queue-item { gap: 4px 10px; }
+        .queue-filename { flex: 1 1 100%; }
+        .queue-eta { flex: 0 0 auto; }
+    }
+
+    main { padding: 16px 24px 56px; }
+
+    /* ── Action bar ── */
+    .action-bar {
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        padding: 8px 0 12px;
+    }
+    .ab-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ab-spacer { flex: 1; }
+    .ab-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ab-btn {
+        display: inline-flex; align-items: center; gap: 6px;
+        background: transparent; border: 1px solid var(--border); color: var(--text);
+        font-family: var(--font-ui); font-weight: 700; font-size: 12px;
+        letter-spacing: 1.5px; text-transform: uppercase; padding: 6px 12px; cursor: pointer;
+        transition: border-color .15s, color .15s; white-space: nowrap; text-decoration: none;
+    }
+    .ab-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .ab-btn.danger { border-color: rgba(255,68,85,.35); color: var(--loss); }
+    .ab-btn.danger:hover { background: rgba(255,68,85,.1); border-color: var(--loss); }
+    .ab-btn:disabled { opacity: .35; cursor: not-allowed; pointer-events: none; }
+    /* Compare-matches button stays visible + inviting even with nothing selected -
+       it's the main discoverability path into /multi now that the standalone
+       match-picker page is gone. Only Delete/Clear (only useful once something is
+       checked) dim away. */
+    .ab-btn.compare { border-color: rgba(0,194,255,.35); color: var(--accent); }
+    .ab-btn.compare:hover { background: rgba(0,194,255,.08); border-color: var(--accent); }
+    .ab-sel-count { font-family: var(--font-mono); font-size: 12px; color: var(--dim); }
+    .ab-sel-count.active { color: var(--accent); }
+    .ab-bulk { display: flex; align-items: center; gap: 8px; }
+    .ab-bulk.empty { opacity: .35; pointer-events: none; }
+    .filter-search {
+        background: var(--bg); border: 1px solid var(--border); color: var(--text);
+        font-family: var(--font-ui); font-size: 12px; padding: 6px 8px;
+        min-width: 150px; cursor: text;
+    }
+    .filter-search:focus { outline: none; border-color: var(--accent); }
+
+    /* ── Popover (columns gear + filter dropdown) ── */
+    .popover-wrap { position: relative; }
+    .popover {
+        display: none; position: absolute; right: 0; top: calc(100% + 6px);
+        background: var(--elev); border-radius: var(--radius-md);
+        padding: 12px 14px; z-index: 150; min-width: 220px;
+        box-shadow: var(--shadow-2);
+    }
+    .popover.open { display: block; }
+    .popover h4 {
+        font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim);
+        font-weight: 700; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+    }
+    .popover h4:not(:first-child) { margin-top: 12px; }
+    .pop-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
+    .pop-row label { display: flex; align-items: center; gap: 7px; cursor: pointer; flex: 1; }
+    .pop-row input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
+    .pop-select {
+        background: var(--bg); border: 1px solid var(--border); color: var(--text);
+        font-family: var(--font-ui); font-size: 12px; padding: 4px 6px; width: 100%;
+    }
+    .pop-dates { display: flex; align-items: center; gap: 6px; }
+    .pop-dates input {
+        background: var(--bg); border: 1px solid var(--border); color: var(--text);
+        font-family: var(--font-mono); font-size: 11px; padding: 3px 4px; flex: 1;
+        color-scheme: dark;
+    }
+    .pop-clear {
+        margin-top: 10px; width: 100%; background: transparent; border: 1px solid var(--border);
+        color: var(--dim); font-family: inherit; font-size: 11px; letter-spacing: 1.5px;
+        text-transform: uppercase; padding: 5px; cursor: pointer;
+    }
+    .pop-clear:hover { color: var(--text); border-color: var(--border-hi); }
+    .filter-badge {
+        display: none; background: var(--accent); color: #000; font-family: var(--font-mono);
+        font-size: 10px; font-weight: 700; border-radius: var(--radius-pill); padding: 0 5px; margin-left: 2px;
+    }
+    .filter-badge.on { display: inline-block; }
+
+    /* ── Matches table ── */
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-lg); }
+    .matches-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .matches-table thead th {
+        position: sticky; top: 0; background: var(--panel); text-align: left;
+        font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--dim);
+        font-weight: 700; padding: 9px 12px; border-bottom: 1px solid var(--border);
+        white-space: nowrap; user-select: none;
+    }
+    .matches-table th.sortable { cursor: pointer; }
+    .matches-table th.sortable:hover { color: var(--text); }
+    .matches-table th .arrow { color: var(--accent); font-size: 9px; margin-left: 3px; }
+    .matches-table tbody td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .matches-table tbody tr { transition: background .12s; }
+    .matches-table tbody tr:hover { background: var(--panel); }
+    .matches-table tbody tr.selected { background: rgba(0,194,255,.06); box-shadow: inset 3px 0 0 var(--accent); }
+    .matches-table tbody tr.hidden { display: none; }
+
+    .col-select { width: 34px; text-align: center; }
+    .col-select input { accent-color: var(--accent); cursor: pointer; }
+    .cell-map { font-weight: 800; letter-spacing: .5px; text-transform: uppercase; color: white; cursor: pointer; }
+    .cell-map small { display: block; font-size: 9px; letter-spacing: 1.5px; color: var(--dim); font-weight: 600; text-transform: uppercase; }
+    .cell-map-ico { height: 26px; width: auto; display: block; margin-bottom: 3px; }
+    .cell-score { font-family: var(--font-mono); font-size: 15px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+    .cell-score .ct { color: var(--ct); } .cell-score .t { color: var(--t); } .cell-score .sep { color: var(--dim); padding: 0 3px; }
+    .cell-teams { min-width: 280px; max-width: 430px; }
+    /* Two rosters per row. Each team used to be a "T1"/"T2" label plus five
+       individually bordered chips - ten boxes per row, fifty on a screen, and
+       the borders carried no information the colour didn't already carry. The
+       team is a 2px rule in its own colour instead, which matches the score
+       cell beside it (CT blue first, T orange second) and leaves the names as
+       the only ink. */
+    .tmrow {
+        display: flex; flex-wrap: wrap; align-items: baseline;
+        padding-left: 8px; border-left: 2px solid var(--tm-c); line-height: 1.55;
+    }
+    .tmrow + .tmrow { margin-top: 4px; }
+    .tmrow.t1 { --tm-c: var(--ct); }
+    .tmrow.t2 { --tm-c: var(--t); }
+    .tnw { display: inline-flex; align-items: baseline; white-space: nowrap; }
+    .tn {
+        font-family: var(--font-narrow); font-size: 10.5px;
+        color: color-mix(in srgb, var(--tm-c) 45%, var(--dim));
+        max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /* Top fragger of each side, which the summary rows are already sorted by.
+       This is where the kill counts went: printing "name 24" ten times was
+       noise, but which of the five carried is worth one weight change. */
+    .tn.top { color: var(--tm-c); font-weight: 700; }
+    /* A real element, not a ::before on .tn - .tn clips its own overflow for
+       the ellipsis, which would eat a pseudo-element separator. */
+    .tsep {
+        font-style: normal; font-size: 9px; padding: 0 5px; user-select: none;
+        /* Bright enough to actually separate. Player names contain spaces
+           ("Streifen Carl"), so the dot is what says where one name ends -
+           at --border-hi it was invisible and the row read as one long
+           string. Still well under the names' own weight. */
+        color: color-mix(in srgb, var(--dimmer) 65%, transparent);
+    }
+    .tn-none { color: var(--dimmer); font-size: 10px; }
+    .cell-mode { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--dim); }
+    /* The mode is a quiet label, and every value reads the same. PREM is not
+       a status worth colouring - it is just which queue the match was, the
+       same kind of fact as MM. */
+    .mode-tag { font-family: var(--font-ui); font-size: 10px; letter-spacing: 1px; color: var(--dim); }
+    .cell-time { font-family: var(--font-mono); font-size: 11px; color: var(--dimmer); white-space: nowrap; }
+    .cell-demo { font-family: var(--font-mono); font-size: 10px; color: var(--dim); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cell-num { font-family: var(--font-mono); font-size: 12px; color: var(--text); text-align: right; }
+    .ow-badge {
+        display: inline-block; font-family: var(--font-mono); font-size: 11px;
+        padding: 1px 7px; border: 1px solid var(--border); color: var(--dim); border-radius: var(--radius-sm);
+    }
+    .ow-badge.flagged { color: var(--loss); border-color: rgba(255,68,85,.4); background: rgba(255,68,85,.08); font-weight: 700; }
+    .ow-badge.clean { color: var(--win); border-color: rgba(61,220,132,.3); }
+    .tags-cell { display: flex; gap: 3px; flex-wrap: wrap; align-items: center; }
+    .tag-pill {
+        font-family: var(--font-ui); font-size: 10px; padding: 1px 6px;
+        background: rgba(0,194,255,.08); border: 1px solid rgba(0,194,255,.25); color: var(--accent);
+        border-radius: var(--radius-pill); white-space: nowrap;
+    }
+    .tag-edit { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 12px; padding: 0 2px; }
+    .tag-edit:hover { color: var(--accent); }
+
+    /* Row action menu (hover) */
+    .cell-actions { text-align: right; white-space: nowrap; }
+    .row-menu-btn { background: none; border: 1px solid var(--border); color: var(--dim); cursor: pointer; padding: 3px 8px; font-size: 13px; }
+    .row-menu-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .row-menu-wrap { position: relative; display: inline-block; }
+    .row-menu {
+        display: none; position: absolute; right: 0; top: calc(100% + 4px);
+        background: var(--elev); border-radius: var(--radius-md); z-index: 120; min-width: 150px;
+        overflow: hidden;   /* its links paint a full-bleed hover background */
+        box-shadow: var(--shadow-2);
+    }
+    .row-menu.open { display: block; }
+    .row-menu a, .row-menu button {
+        display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+        background: none; border: none; color: var(--text); text-decoration: none;
+        font-family: var(--font-ui); font-weight: 700; font-size: 12px;
+        letter-spacing: 1px; text-transform: uppercase; padding: 8px 12px; cursor: pointer;
+    }
+    .row-menu a:hover, .row-menu button:hover { background: var(--panel); color: var(--accent); }
+    .row-menu button.danger:hover { color: var(--loss); }
+
+    /* Avg Rank column. The badge itself (image or Premier rating chip) comes
+       from static/rankbadge.css and both forms are the same height here, so
+       the column reads level whichever kind of rank a match carries. */
+    .cell-rank { font-size: 12px; color: var(--text); white-space: nowrap; }
+    .cell-rank small { display: block; font-size: 9px; color: var(--dim); font-family: var(--font-mono); }
+
+    /* Column visibility toggles */
+    {% for key in ['processed','demo','kills','rounds','tags','duration','rank'] %}
+    .matches-table.hide-{{ key }} .col-{{ key }} { display: none; }
+    {% endfor %}
+
+    /* ── Status bar ── */
+    .status-bar {
+        position: fixed; bottom: 0; left: var(--rail-w); right: 0;
+        background: var(--surface); border-top: 1px solid var(--border);
+        font-family: var(--font-mono); font-size: 11px; color: var(--dim);
+        padding: 7px 24px; display: flex; align-items: center; gap: 16px; z-index: 80;
+    }
+    .status-bar b { color: var(--text); font-weight: 400; }
+    @media (max-width: 950px) { .status-bar { left: 0; } }
+
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--dim); }
+    .empty-state .big { font-size: 44px; font-weight: 800; letter-spacing: 6px; color: var(--dimmer); display: block; margin-bottom: 10px; }
+    .empty-state p { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; }
+
+
+</style>
+{% endblock %}
+
+{% block content %}
+<header class="topbar">
+    <span class="topbar-title">Dashboard</span>
+    <span class="topbar-count">{{ matches|length }} match{% if matches|length != 1 %}es{% endif %} processed</span>
+    <div class="topbar-spacer"></div>
+    <form id="upload-form">
+        <input type="file" id="demo-file-input" name="demo_file" accept=".dem" multiple>
+        <button type="submit" id="upload-btn" class="btn">Upload &amp; Process</button>
+    </form>
+</header>
+<div id="upload-queue"></div>
+
+<main>
+{% if matches %}
+    <!-- ══ MATCHES VIEW ══ -->
+    <div id="view-matches">
+    <div class="action-bar">
+        <div class="ab-left" id="ab-left">
+            <span class="ab-sel-count" id="ab-sel-count">☑ select 2+ matches on the same map to compare</span>
+            <a class="ab-btn compare disabled" id="ab-overlay" href="#"
+               title="Check 2 or more matches on the same map, then open them here to overlay rounds side by side">⧉ Multi Round Analyser</a>
+            <span class="ab-bulk empty" id="ab-bulk">
+                <button type="button" class="ab-btn danger" id="ab-delete">✕ Delete</button>
+                <button type="button" class="ab-btn" id="ab-clear">Clear</button>
+            </span>
+        </div>
+        <div class="ab-spacer"></div>
+        <div class="ab-right">
+            <input type="text" class="filter-search" id="filter-search" placeholder="Search…" autocomplete="off">
+
+            <div class="popover-wrap">
+                <button type="button" class="ab-btn" id="filter-toggle">⛃ Filter<span class="filter-badge" id="filter-badge">0</span></button>
+                <div class="popover" id="filter-pop">
+                    <h4>Map</h4>
+                    <select class="pop-select" id="f-map">
+                        <option value="">All maps</option>
+                        {% for mp in maps %}<option value="{{ mp }}">{{ mp|map_label }}</option>{% endfor %}
+                    </select>
+                    <h4>Mode</h4>
+                    <select class="pop-select" id="f-mode">
+                        <option value="">All modes</option>
+                        {% for md in modes %}<option value="{{ md }}">{{ md }}</option>{% endfor %}
+                    </select>
+                    <h4>Period (played)</h4>
+                    <div class="pop-dates">
+                        <input type="date" id="f-from" title="From"><span style="color:var(--dim)">→</span><input type="date" id="f-to" title="To">
+                    </div>
+                    <h4>Overwatch</h4>
+                    <div class="pop-row"><label><input type="checkbox" id="f-flagged"> Only matches with flags</label></div>
+                    <h4>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0">(any of)</span></h4>
+                    <!-- Built by renderTagFilter() from the rows' own data-tags, not
+                         server-rendered: tags are edited in place on this page, and a
+                         Jinja-rendered list went stale the moment you added one (and
+                         was absent entirely on a corpus with no tags yet), which is
+                         the one filter here that genuinely did not work. -->
+                    <div id="f-tags-list"></div>
+                    <button type="button" class="pop-clear" id="f-clear">Clear filters</button>
+                </div>
+            </div>
+
+            <div class="popover-wrap">
+                <button type="button" class="ab-btn" id="cols-toggle">⚙ Columns</button>
+                <div class="popover" id="cols-pop">
+                    <h4>Show columns</h4>
+                    {% for key, label in [('score','Score'),('teams','Teams'),('mode','Mode'),('rank','Avg rank'),('played','Played'),('duration','Duration'),('overwatch','Overwatch'),('tags','Tags'),('processed','Processed'),('demo','Demo file'),('kills','Kills'),('rounds','Rounds')] %}
+                    <div class="pop-row"><label><input type="checkbox" class="col-toggle" data-col="{{ key }}"> {{ label }}</label></div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="table-wrap">
+        <table class="matches-table" id="matches-table">
+            <thead>
+                <tr>
+                    <th class="col-select"><input type="checkbox" id="select-all" title="Select all visible - check 2+ matches on the same map to compare them in Multi Round Analyser"></th>
+                    <th class="sortable" data-sort="map">Map<span class="arrow"></span></th>
+                    <th class="sortable col-score" data-sort="score">Score<span class="arrow"></span></th>
+                    <th class="col-teams">Teams</th>
+                    <th class="sortable col-mode" data-sort="mode">Mode<span class="arrow"></span></th>
+                    <th class="sortable col-rank" data-sort="rank">Avg Rank<span class="arrow"></span></th>
+                    <th class="sortable" data-sort="played">Played<span class="arrow">▼</span></th>
+                    <th class="sortable col-duration" data-sort="duration">Duration<span class="arrow"></span></th>
+                    <th class="sortable col-overwatch" data-sort="overwatch">OW<span class="arrow"></span></th>
+                    <th class="sortable col-tags" data-sort="tags">Tags<span class="arrow"></span></th>
+                    <th class="sortable col-processed" data-sort="processed">Processed<span class="arrow"></span></th>
+                    <th class="col-demo">Demo</th>
+                    <th class="sortable col-kills" data-sort="kills">Kills<span class="arrow"></span></th>
+                    <th class="sortable col-rounds" data-sort="rounds">Rounds<span class="arrow"></span></th>
+                    <th class="col-actions"></th>
+                </tr>
+            </thead>
+            <tbody id="match-rows">
+                {% for match in matches %}
+                <tr class="match-row"
+                    data-file="{{ match.file }}"
+                    data-map="{{ match.map }}"
+                    data-mode="{{ match.mode_label }}"
+                    data-name="{{ match.stem }} {{ match.demo }} {{ match.tags|join(' ') }}"
+                    data-played="{{ match.played_epoch }}"
+                    data-processed="{{ match.processed_epoch }}"
+                    data-tags="{{ match.tags|join(',') }}">
+                    <td class="col-select"><input type="checkbox" class="row-check"></td>
+                    <td class="cell-map">{{ match.map_label }}<small>{{ match.mode_label }}</small></td>
+                    <td class="cell-score col-score"><span class="ct">-</span><span class="sep">:</span><span class="t">-</span></td>
+                    <td class="cell-teams col-teams"><span style="color:var(--dim);font-size:11px">…</span></td>
+                    <td class="cell-mode col-mode"><span class="mode-tag">{{ match.mode_label }}</span></td>
+                    <td class="cell-rank rank-stack col-rank">-</td>
+                    <td class="cell-time">{{ match.played_label }}</td>
+                    <td class="cell-num col-duration">-</td>
+                    <td class="col-overwatch"><span class="ow-badge">-</span></td>
+                    <td class="col-tags"><span class="tags-cell"></span></td>
+                    <td class="cell-time col-processed">{{ match.processed_label }}</td>
+                    <td class="cell-demo col-demo" title="{{ match.demo }}">{{ match.demo }}</td>
+                    <td class="cell-num col-kills">-</td>
+                    <td class="cell-num col-rounds">-</td>
+                    <td class="cell-actions">
+                        <div class="row-menu-wrap">
+                            <button type="button" class="row-menu-btn" title="Actions">⋯</button>
+                            <div class="row-menu">
+                                <a href="/match?match={{ match.file }}">📊 Stats</a>
+                                <a href="/viewer?match={{ match.file }}">▶ Replay</a>
+                                <a href="/multi?match={{ match.file }}">⧉ Multi Round Analyser</a>
+                                <button type="button" class="danger remove-btn" data-file="{{ match.file }}">✕ Remove</button>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="empty-state" id="no-results" style="display:none">
+        <span class="big">NO MATCHES</span>
+        <p>No matches fit the current filters</p>
+    </div>
+    </div>
+
+{% else %}
+    <div class="empty-state">
+        <span class="big">NO DEMOS</span>
+        <p>Upload a .dem file above to get started</p>
+    </div>
+{% endif %}
+</main>
+
+{% if matches %}
+<div class="status-bar" id="status-bar">
+    <span><b id="sb-total">{{ matches|length }}</b> matches</span>
+    <span><b id="sb-visible">{{ matches|length }}</b> shown</span>
+    <span><b id="sb-selected">0</b> selected</span>
+    <span><b id="sb-filtered">0</b> filtered out</span>
+    <span class="ab-spacer"></span>
+    <span>~<b id="sb-size">…</b> MB</span>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='fmt.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='matchhero.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='maps.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='assets.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='assets.js') }}"></script>
+<script>
+// ════ Match summaries: ONE fetch of the precomputed index (dashboard_plan §4) ════
+const summaryByFile = new Map();
+const summaryReady = fetch('/matches/summary')
+    .then(r => r.json())
+    .then(j => { (j.matches || []).forEach(m => summaryByFile.set(m.file, m)); })
+    .catch(() => {});
+
+const fmtDuration = ticks => {
+    const s = Math.round((ticks || 0) / 64);
+    if (!s) return '-';
+    const m = Math.floor(s / 60);
+    return `${m}:${String(s % 60).padStart(2, '0')}`;
+};
+// One team's roster: names only, separated by a thin dot, on a rule in the
+// team's colour. Kills stay in the tooltip and as the `.top` weight - see the
+// .tmrow comment in the stylesheet for why the per-name boxes went away.
+// Names are Steam display names, i.e. arbitrary user text, so every one of
+// them goes through the shared escaper before it reaches innerHTML.
+const teamRow = (players, cls) => {
+    const esc = FmtLogic.esc, list = players || [];
+    // Each name carries its own TRAILING separator, and the pair is one
+    // non-wrapping unit. Joining with a standalone separator instead lets the
+    // roster wrap onto a line that begins with a dangling "·", which the
+    // narrow (950px) layout does routinely.
+    const names = list.map((p, i) =>
+        `<span class="tnw"><span class="tn${i === 0 ? ' top' : ''}"` +
+        ` title="${esc(p.name)} · ${p.kills} kills">${esc(p.name)}</span>` +
+        `${i < list.length - 1 ? '<i class="tsep">·</i>' : ''}</span>`
+    ).join('') || '<span class="tn-none">-</span>';
+    return `<div class="tmrow ${cls}">${names}</div>`;
+};
+// Avg-rank skill-group icon (Competitive rank_type 12 / Wingman 7). Returns an
+// <img> when static/assets/ has it, else '' so the caller keeps the text label
+// (Premier ratings and the no-asset case both stay text).
+const avgRankIcon = (s) => {
+    if (!window.Assets || !(s.rankType === 12 || s.rankType === 7)) return '';
+    const url = Assets.url('skillgroups', Math.round(s.avgRank || 0));
+    return url ? `<img class="rank-ico" src="${url}" alt="${s.rankLabel}">` : '';
+};
+
+// Map icon over the map name, when static/assets/ has it. Runs over every row
+// (independent of the summary index) and prepends a block <img> above the name;
+// absent icon (or no assets extracted) → the row keeps today's text label.
+function applyMapIcons() {
+    if (!window.Assets) return;
+    document.querySelectorAll('.match-row').forEach(row => {
+        const cell = row.querySelector('.cell-map');
+        if (!cell || cell.querySelector('.cell-map-ico')) return;
+        const url = Assets.url('map_icons', row.dataset.map);
+        if (!url) return;   // no icon → keep text as-is
+        const ico = document.createElement('img');
+        ico.className = 'cell-map-ico';
+        ico.src = url;
+        ico.alt = row.dataset.map;
+        cell.insertBefore(ico, cell.firstChild);
+    });
+}
+
+// ════ Populate table rows from the summary index ════
+function populateRows() {
+    document.querySelectorAll('.match-row').forEach(row => {
+        const s = summaryByFile.get(row.dataset.file);
+        if (!s) {
+            row.querySelector('.cell-teams').innerHTML = '<span style="color:var(--dim);font-size:10px">no data</span>';
+            return;
+        }
+        // sortable numeric data-attrs
+        row.dataset.score = (s.scoreCT || 0) + (s.scoreT || 0);
+        row.dataset.duration = s.durationTicks || 0;
+        row.dataset.kills = s.killsTotal || 0;
+        row.dataset.rounds = s.roundsTotal || 0;
+        row.dataset.overwatch = (s.overwatchFlags == null ? -1 : s.overwatchFlags);
+        row.dataset.rank = s.rankSort || 0;
+        row.dataset.size = s.sizeBytes || 0;
+
+        const sc = row.querySelector('.cell-score');
+        sc.querySelector('.ct').textContent = s.scoreCT;
+        sc.querySelector('.t').textContent  = s.scoreT;
+        row.querySelector('.cell-teams').innerHTML =
+            teamRow(s.topCT, 't1') + teamRow(s.topT, 't2');
+        // Fold player names into the search haystack so the filter box can find
+        // a match by who played in it, not just filename/tags.
+        const playerNames = [...(s.topCT || []), ...(s.topT || [])].map(p => p.name).join(' ');
+        row.dataset.name = `${row.dataset.name} ${playerNames}`.toLowerCase();
+        const rankCell = row.querySelector('.cell-rank');
+        if (s.rankLabel) {
+            // Skill-group icon when static/assets/ is present (Competitive/Wingman);
+            // Premier and the no-asset case fall back to the text label.
+            const ico = avgRankIcon(s);
+            const tier = MatchHeroLogic.rankTier(s.rankType, Math.round(s.avgRank || 0));
+            const chip = `<span class="rank-chip ${tier}">${s.rankLabel}</span>`;
+            rankCell.innerHTML = (ico || chip) + `<small>avg of ${s.rankedPlayers} · ${s.avgRank}</small>`;
+            rankCell.title = `Average rank across ${s.rankedPlayers} ranked players (mean value ${s.avgRank})`;
+        }
+        else { rankCell.textContent = '-'; rankCell.title = 'No rank data'; }
+        row.querySelector('.col-duration').textContent = fmtDuration(s.durationTicks);
+        row.querySelector('.col-kills').textContent  = s.killsTotal || 0;
+        row.querySelector('.col-rounds').textContent = s.roundsTotal || 0;
+
+        const ow = row.querySelector('.ow-badge');
+        if (s.overwatchFlags == null) { ow.textContent = '-'; ow.title = 'Overwatch not yet analysed'; }
+        else if (s.overwatchFlags > 0) { ow.textContent = '⚑ ' + s.overwatchFlags; ow.className = 'ow-badge flagged'; ow.title = s.overwatchFlags + ' player(s) at high suspicion'; }
+        else { ow.textContent = '✓'; ow.className = 'ow-badge clean'; ow.title = 'No high-suspicion players'; }
+    });
+    renderTags();
+    updateStatusBar();
+}
+
+// ════ Tags (Phase 5) ════
+function renderTags() {
+    document.querySelectorAll('.match-row').forEach(row => {
+        const cell = row.querySelector('.tags-cell');
+        const tags = (row.dataset.tags || '').split(',').filter(Boolean);
+        cell.innerHTML = tags.map(t => `<span class="tag-pill">${t}</span>`).join('') +
+            `<button type="button" class="tag-edit" title="Edit tags">✎</button>`;
+    });
+    renderTagFilter();
+}
+
+// The Tags facet in the filter popover, rebuilt from whatever the rows
+// currently carry. Runs on load and after every tag edit, so a tag you just
+// typed is immediately filterable. Ticked boxes survive the rebuild; a
+// selection whose tag no longer exists anywhere is dropped, otherwise it would
+// keep filtering the table down to nothing with no visible control to undo it.
+const fEsc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function renderTagFilter() {
+    const host = document.getElementById('f-tags-list');
+    if (!host) return;
+    const all = [...new Set([...document.querySelectorAll('.match-row')]
+        .flatMap(r => (r.dataset.tags || '').split(',').filter(Boolean)))].sort();
+    const before = state.tags.length;
+    state.tags = state.tags.filter(t => all.includes(t));
+    host.innerHTML = all.length
+        ? all.map(t => `<div class="pop-row"><label><input type="checkbox" class="f-tag" value="${fEsc(t)}"${
+              state.tags.includes(t) ? ' checked' : ''}> ${fEsc(t)}</label></div>`).join('')
+        : '<div class="pop-row" style="color:var(--dim)">No tags yet \u2014 add one with the ✎ in the Tags column.</div>';
+    if (state.tags.length !== before) apply();
+}
+document.getElementById('match-rows')?.addEventListener('click', async e => {
+    const btn = e.target.closest('.tag-edit');
+    if (!btn) return;
+    e.stopPropagation();
+    const row = btn.closest('.match-row');
+    const cur = (row.dataset.tags || '').split(',').filter(Boolean);
+    const input = prompt('Tags (comma-separated):', cur.join(', '));
+    if (input === null) return;
+    const tags = input.split(',').map(t => t.trim()).filter(Boolean);
+    try {
+        const r = await fetch('/matches/' + encodeURIComponent(row.dataset.file) + '/meta', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tags })
+        });
+        const data = await r.json();
+        if (!data.ok) throw new Error(data.error || 'failed');
+        const newTags = data.tags || [];
+        // keep the fuzzy-search haystack in sync: strip old tags, append new ones
+        const base = (row.dataset.name || '').split(' ').filter(w => !cur.includes(w));
+        row.dataset.tags = newTags.join(',');
+        row.dataset.name = [...base, ...newTags].join(' ');
+        renderTags();
+        apply();
+    } catch (err) { alert('Could not save tags: ' + err.message); }
+});
+
+// ════ Filter + sort state machine ════
+// One `state` object drives every control on the page; apply() re-derives the
+// visible rows from it rather than each control mutating the table directly,
+// so filters and sorting compose instead of overwriting each other.
+const state = { sort: 'played', dir: 'desc', map: '', mode: '', from: 0, to: 0, flagged: false, tags: [], search: '' };
+const table = document.getElementById('matches-table');
+
+function apply() {
+    if (!table) return;
+    const rows = Array.from(document.querySelectorAll('.match-row'));
+    let visible = 0;
+    rows.forEach(r => {
+        const okMap  = !state.map  || r.dataset.map  === state.map;
+        const okMode = !state.mode || r.dataset.mode === state.mode;
+        const played = Number(r.dataset.played) || 0;
+        const okFrom = !state.from || played >= state.from;
+        const okTo   = !state.to   || played <= state.to;
+        const okFlag = !state.flagged || (Number(r.dataset.overwatch) > 0);
+        const rtags  = (r.dataset.tags || '').split(',').filter(Boolean);
+        // ANY of the ticked tags, not ALL - a checkbox facet reads as a
+        // widening list, and requiring every ticked tag on one match made a
+        // second tick almost always empty the table.
+        const okTags = !state.tags.length || state.tags.some(t => rtags.includes(t));
+        const okSearch = !state.search || r.dataset.name.toLowerCase().includes(state.search);
+        const show = okMap && okMode && okFrom && okTo && okFlag && okTags && okSearch;
+        r.classList.toggle('hidden', !show);
+        if (show) visible++;
+    });
+
+    // sort
+    const numeric = ['score', 'played', 'processed', 'duration', 'kills', 'rounds', 'overwatch', 'rank'];
+    const key = state.sort;
+    rows.sort((a, b) => {
+        let av, bv;
+        if (numeric.includes(key)) { av = Number(a.dataset[key]) || 0; bv = Number(b.dataset[key]) || 0; }
+        else { av = (a.dataset[key] || '').toLowerCase(); bv = (b.dataset[key] || '').toLowerCase(); return state.dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av); }
+        return state.dir === 'asc' ? av - bv : bv - av;
+    });
+    const tb = document.getElementById('match-rows');
+    rows.forEach(r => tb.appendChild(r));
+
+    document.getElementById('no-results').style.display = visible === 0 ? 'block' : 'none';
+    table.parentElement.style.display = visible === 0 ? 'none' : '';
+    updateFilterBadge();
+    updateStatusBar();
+    updateSortArrows();
+}
+
+function updateSortArrows() {
+    document.querySelectorAll('.matches-table th.sortable').forEach(th => {
+        const a = th.querySelector('.arrow');
+        if (th.dataset.sort === state.sort) a.textContent = state.dir === 'asc' ? '▲' : '▼';
+        else a.textContent = '';
+    });
+}
+
+document.querySelectorAll('.matches-table th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+        const k = th.dataset.sort;
+        if (state.sort === k) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+        else { state.sort = k; state.dir = (['map', 'mode'].includes(k)) ? 'asc' : 'desc'; }
+        apply();
+    });
+});
+
+// ════ Filter dropdown (Phase 4) ════
+function updateFilterBadge() {
+    const n = (state.map ? 1 : 0) + (state.mode ? 1 : 0) + (state.from ? 1 : 0) + (state.to ? 1 : 0) + (state.flagged ? 1 : 0) + state.tags.length;
+    const b = document.getElementById('filter-badge');
+    b.textContent = n; b.classList.toggle('on', n > 0);
+}
+const dateToEpoch = (v, end) => {
+    if (!v) return 0;
+    const d = new Date(v + 'T00:00:00Z');
+    if (isNaN(d)) return 0;
+    return Math.floor(d.getTime() / 1000) + (end ? 86399 : 0);
+};
+document.getElementById('f-map')?.addEventListener('change', e => { state.map = e.target.value; apply(); });
+document.getElementById('f-mode')?.addEventListener('change', e => { state.mode = e.target.value; apply(); });
+document.getElementById('f-from')?.addEventListener('change', e => { state.from = dateToEpoch(e.target.value, false); apply(); });
+document.getElementById('f-to')?.addEventListener('change', e => { state.to = dateToEpoch(e.target.value, true); apply(); });
+document.getElementById('f-flagged')?.addEventListener('change', e => { state.flagged = e.target.checked; apply(); });
+// Delegated: renderTagFilter() replaces these checkboxes whenever tags change.
+document.getElementById('f-tags-list')?.addEventListener('change', () => {
+    state.tags = [...document.querySelectorAll('.f-tag:checked')].map(c => c.value); apply();
+});
+document.getElementById('f-clear')?.addEventListener('click', () => {
+    state.map = state.mode = state.search = ''; state.from = state.to = 0; state.flagged = false; state.tags = [];
+    document.getElementById('f-map').value = ''; document.getElementById('f-mode').value = '';
+    document.getElementById('f-from').value = ''; document.getElementById('f-to').value = '';
+    document.getElementById('f-flagged').checked = false;
+    document.querySelectorAll('.f-tag').forEach(c => c.checked = false);
+    document.getElementById('filter-search').value = '';
+    apply();
+});
+document.getElementById('filter-search')?.addEventListener('input', e => { state.search = e.target.value.trim().toLowerCase(); apply(); });
+
+// ════ Popovers (filter + columns), close on outside click ════
+function wirePopover(btnId, popId) {
+    const btn = document.getElementById(btnId), pop = document.getElementById(popId);
+    if (!btn) return;
+    btn.addEventListener('click', e => {
+        e.stopPropagation();
+        document.querySelectorAll('.popover.open').forEach(p => { if (p !== pop) p.classList.remove('open'); });
+        pop.classList.toggle('open');
+    });
+    pop.addEventListener('click', e => e.stopPropagation());
+}
+wirePopover('filter-toggle', 'filter-pop');
+wirePopover('cols-toggle', 'cols-pop');
+document.addEventListener('click', () => {
+    document.querySelectorAll('.popover.open').forEach(p => p.classList.remove('open'));
+    document.querySelectorAll('.row-menu.open').forEach(m => m.classList.remove('open'));
+});
+
+// ════ Column visibility (persisted in localStorage) ════
+const HIDEABLE = ['score', 'teams', 'mode', 'rank', 'played', 'duration', 'overwatch', 'tags', 'processed', 'demo', 'kills', 'rounds'];
+const DEFAULT_HIDDEN = ['processed', 'demo', 'kills', 'rounds'];
+function loadHidden() {
+    try { const v = JSON.parse(localStorage.getItem('dash.cols')); if (Array.isArray(v)) return new Set(v); } catch {}
+    return new Set(DEFAULT_HIDDEN);
+}
+let hiddenCols = loadHidden();
+function applyColumns() {
+    HIDEABLE.forEach(key => table.classList.toggle('hide-' + key, hiddenCols.has(key)));
+    document.querySelectorAll('.col-toggle').forEach(cb => { cb.checked = !hiddenCols.has(cb.dataset.col); });
+    localStorage.setItem('dash.cols', JSON.stringify([...hiddenCols]));
+}
+document.querySelectorAll('.col-toggle').forEach(cb => cb.addEventListener('change', () => {
+    if (cb.checked) hiddenCols.delete(cb.dataset.col); else hiddenCols.add(cb.dataset.col);
+    applyColumns();
+}));
+if (table) applyColumns();
+
+// ════ Row navigation + row action menu ════
+document.getElementById('match-rows')?.addEventListener('click', e => {
+    if (e.target.closest('.col-select') || e.target.closest('.cell-actions') || e.target.closest('.tag-edit')) return;
+    const menuBtn = e.target.closest('.row-menu-btn');
+    const row = e.target.closest('.match-row');
+    if (!row) return;
+    // navigate to stats on a plain row click
+    location.href = '/match?match=' + encodeURIComponent(row.dataset.file);
+});
+document.getElementById('match-rows')?.addEventListener('click', e => {
+    const btn = e.target.closest('.row-menu-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    const menu = btn.nextElementSibling;
+    const isOpen = menu.classList.contains('open');
+    document.querySelectorAll('.row-menu.open').forEach(m => m.classList.remove('open'));
+    if (!isOpen) menu.classList.add('open');
+});
+
+// ════ Selection + bulk actions ════
+const abBulk = document.getElementById('ab-bulk');
+function selectedRows() { return [...document.querySelectorAll('.match-row')].filter(r => r.querySelector('.row-check').checked && !r.classList.contains('hidden')); }
+function updateSelection() {
+    const sel = selectedRows();
+    document.querySelectorAll('.match-row').forEach(r => r.classList.toggle('selected', r.querySelector('.row-check').checked));
+    abBulk.classList.toggle('empty', sel.length === 0);
+
+    const overlay = document.getElementById('ab-overlay');
+    const count = document.getElementById('ab-sel-count');
+    // overlay only valid for ≥2 same-map matches - the hint text walks the user
+    // through why, since this checkbox flow is now the only way into /multi
+    // from the dashboard (the standalone match picker was removed).
+    const sameMap = sel.length >= 2 && sel.every(r => r.dataset.map === sel[0].dataset.map);
+    if (sel.length === 0) {
+        count.textContent = '☑ select 2+ matches on the same map to compare';
+        count.classList.remove('active');
+    } else if (sel.length === 1) {
+        count.textContent = '1 selected - pick 1 more on the same map to compare';
+        count.classList.add('active');
+    } else if (!sameMap) {
+        count.textContent = sel.length + ' selected - must be the same map to compare';
+        count.classList.add('active');
+    } else {
+        count.textContent = sel.length + ' selected';
+        count.classList.add('active');
+    }
+    overlay.classList.toggle('disabled', !sameMap);
+    overlay.style.pointerEvents = sameMap ? '' : 'none';
+    overlay.style.opacity = sameMap ? '' : '.4';
+    if (sameMap) overlay.href = '/multi?files=' + sel.map(r => encodeURIComponent(r.dataset.file)).join(',');
+    updateStatusBar();
+}
+document.getElementById('match-rows')?.addEventListener('change', e => {
+    if (e.target.classList.contains('row-check')) updateSelection();
+});
+document.getElementById('select-all')?.addEventListener('change', e => {
+    const on = e.target.checked;
+    document.querySelectorAll('.match-row:not(.hidden) .row-check').forEach(c => c.checked = on);
+    updateSelection();
+});
+document.getElementById('ab-clear')?.addEventListener('click', () => {
+    document.querySelectorAll('.row-check').forEach(c => c.checked = false);
+    document.getElementById('select-all').checked = false;
+    updateSelection();
+});
+document.getElementById('ab-delete')?.addEventListener('click', async () => {
+    const sel = selectedRows();
+    if (!sel.length) return;
+    if (!confirm(`Delete ${sel.length} match${sel.length > 1 ? 'es' : ''}? This cannot be undone.`)) return;
+    let deleted = 0;
+    for (const row of sel) {
+        try {
+            const r = await fetch('/delete/' + encodeURIComponent(row.dataset.file), { method: 'POST' });
+            if ((await r.json()).ok) { row.remove(); deleted++; }
+        } catch {}
+    }
+    updateSelection(); apply();
+    if (deleted < sel.length) alert(`${sel.length - deleted} could not be deleted.`);
+});
+
+// ════ Remove (row menu) ════
+document.getElementById('match-rows')?.addEventListener('click', async e => {
+    const btn = e.target.closest('.remove-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    const file = btn.dataset.file;
+    if (!confirm(`Remove ${file}? This deletes the processed data and cannot be undone.`)) return;
+    try {
+        const r = await fetch('/delete/' + encodeURIComponent(file), { method: 'POST' });
+        if (!(await r.json()).ok) throw new Error('failed');
+        btn.closest('.match-row').remove();
+        apply();
+    } catch (err) { alert('Could not remove match.'); }
+});
+
+// ════ Status bar ════
+function updateStatusBar() {
+    const rows = [...document.querySelectorAll('.match-row')];
+    const total = rows.length;
+    const visible = rows.filter(r => !r.classList.contains('hidden')).length;
+    const selected = rows.filter(r => r.querySelector('.row-check').checked).length;
+    document.getElementById('sb-total').textContent = total;
+    document.getElementById('sb-visible').textContent = visible;
+    document.getElementById('sb-selected').textContent = selected;
+    document.getElementById('sb-filtered').textContent = total - visible;
+    const bytes = rows.filter(r => !r.classList.contains('hidden')).reduce((a, r) => a + (Number(r.dataset.size) || 0), 0);
+    document.getElementById('sb-size').textContent = (bytes / 1048576).toFixed(1);
+    document.querySelector('.topbar-count').textContent = `${total} match${total !== 1 ? 'es' : ''} processed`;
+}
+
+// Wait for the asset manifest too, so the first paint can show rank icons rather
+// than text that never upgrades (a missing manifest resolves false → text stays).
+Promise.all([summaryReady, Assets.load()]).then(() => {
+    applyMapIcons();
+    populateRows();
+    apply();
+});
+
+// ════ Multi-file upload queue ════
+//
+// One progress bar per demo, upload and parse on the same bar: the stage name
+// is drawn inside it and the ETA beside it. The server reports the parse half
+// (see _PARSE_STAGE_WEIGHTS in app.py); the upload half is measured here from
+// XHR upload events, which is the whole reason this is not a fetch() - fetch
+// has no upload progress.
+(function () {
+    const form = document.getElementById('upload-form');
+    const fileInput = document.getElementById('demo-file-input');
+    const uploadBtn = document.getElementById('upload-btn');
+    const queueEl = document.getElementById('upload-queue');
+    let queueItems = [];
+
+    // Share of the bar given to the upload. A pacing weight only - it changes
+    // how fast the bar moves, never what it reports: the label and the ETA both
+    // name the phase they belong to. Kept small because the common case is a
+    // browser on the same machine as the server, where the upload is a local
+    // file copy against a parse of several seconds.
+    const UPLOAD_SHARE = 0.15;
+    const POLL_MS = 700;   // the server refreshes its fraction every 250 ms
+
+    const STAGE_LABELS = {
+        queued:    'Queued',
+        uploading: 'Uploading',
+        parse:     'Parsing demo',
+        chunks:    'Writing ticks',
+        encode:    'Writing match',
+        save:      'Saving',
+        done:      'Done',
+    };
+
+    function etaText(seconds) {
+        if (seconds == null || !isFinite(seconds) || seconds < 0) return '';
+        if (seconds < 5) return 'a few seconds';
+        const s = Math.round(seconds);
+        if (s < 60) return `~${s}s left`;
+        const m = Math.floor(s / 60);
+        return `~${m}m ${String(s % 60).padStart(2, '0')}s left`;
+    }
+
+    fileInput.addEventListener('change', () => {
+        const files = [...fileInput.files];
+        if (!files.length) { queueEl.style.display = 'none'; return; }
+        renderQueue(files);
+        uploadBtn.textContent = files.length === 1 ? 'Upload & Process' : `Upload & Process (${files.length})`;
+    });
+
+    function renderQueue(files) {
+        queueEl.innerHTML = '';
+        queueItems = files.map(file => {
+            const item = document.createElement('div'); item.className = 'queue-item';
+            const fname = document.createElement('span'); fname.className = 'queue-filename';
+            fname.textContent = file.name; fname.title = file.name;
+            const bar = document.createElement('div'); bar.className = 'queue-bar';
+            const fill = document.createElement('div'); fill.className = 'queue-fill';
+            const label = document.createElement('span'); label.className = 'queue-label';
+            bar.append(fill, label);
+            const eta = document.createElement('span'); eta.className = 'queue-eta';
+            item.append(fname, bar, eta); queueEl.appendChild(item);
+            const rec = { file, el: item, bar, fill, label, eta };
+            setProgress(rec, 'queued', 0, null);
+            return rec;
+        });
+        queueEl.style.display = 'flex';
+    }
+
+    function setProgress(rec, stage, frac, eta) {
+        const pct = Math.max(0, Math.min(1, frac || 0));
+        rec.fill.style.width = (pct * 100).toFixed(1) + '%';
+        rec.label.innerHTML = '';
+        const name = document.createElement('span');
+        name.textContent = STAGE_LABELS[stage] || stage;
+        rec.label.append(name);
+        if (stage !== 'queued' && stage !== 'done') {
+            const p = document.createElement('span'); p.className = 'pct';
+            p.textContent = Math.round(pct * 100) + '%';
+            rec.label.append(p);
+        }
+        rec.eta.textContent = stage === 'done' ? '' : etaText(eta);
+        // Indeterminate only while genuinely at zero: a parser that could not
+        // stat the demo reports no fraction, and a frozen bar reads as a hang.
+        rec.bar.classList.toggle('indet', stage === 'parse' && pct <= 0.001);
+    }
+
+    function setDone(rec) {
+        rec.el.classList.add('done'); rec.bar.classList.remove('indet');
+        setProgress(rec, 'done', 1, null);
+    }
+
+    function setError(rec, message) {
+        rec.el.classList.add('error'); rec.bar.classList.remove('indet');
+        rec.fill.style.width = '100%';
+        rec.label.textContent = 'Error';
+        rec.eta.textContent = '';
+        if (message) { rec.bar.title = message; rec.el.title = message; }
+    }
+
+    // -> job_id, or null when the row has already been marked errored.
+    function uploadDemo(rec) {
+        return new Promise(resolve => {
+            const fd = new FormData();
+            fd.append('demo_file', rec.file);
+            fd.append('demo_mtime', rec.file.lastModified);
+            const xhr = new XMLHttpRequest();
+            const t0 = performance.now();
+            xhr.open('POST', '/process');
+            xhr.upload.addEventListener('progress', e => {
+                if (!e.lengthComputable || !e.total) return;
+                const f = e.loaded / e.total;
+                const elapsed = (performance.now() - t0) / 1000;
+                const eta = f > 0.02 ? elapsed * (1 - f) / f : null;
+                setProgress(rec, 'uploading', UPLOAD_SHARE * f, eta);
+            });
+            xhr.addEventListener('load', () => {
+                let data = null;
+                try { data = JSON.parse(xhr.responseText); } catch {}
+                if (!data || !data.ok) {
+                    setError(rec, (data && data.error) || `Upload failed (HTTP ${xhr.status})`);
+                    return resolve(null);
+                }
+                setProgress(rec, 'parse', UPLOAD_SHARE, null);
+                resolve(data.job_id);
+            });
+            xhr.addEventListener('error', () => { setError(rec, 'Upload failed'); resolve(null); });
+            xhr.addEventListener('abort', () => { setError(rec, 'Upload cancelled'); resolve(null); });
+            xhr.send(fd);
+        });
+    }
+
+    async function pollJob(rec, jobId) {
+        while (true) {
+            await new Promise(r => setTimeout(r, POLL_MS));
+            let data;
+            try {
+                data = await (await fetch('/process/status/' + jobId)).json();
+            } catch (err) { setError(rec, err.message); return; }
+            if (data.state === 'done')  { setDone(rec); return; }
+            if (data.state === 'error') { setError(rec, data.error); return; }
+            setProgress(rec, data.stage || 'parse',
+                        UPLOAD_SHARE + (1 - UPLOAD_SHARE) * (data.progress || 0),
+                        data.eta == null ? null : data.eta);
+        }
+    }
+
+    form.addEventListener('submit', async e => {
+        e.preventDefault();
+        const files = [...fileInput.files];
+        if (!files.length) return;
+        if (!queueItems.length) renderQueue(files);
+        uploadBtn.disabled = true;
+        // Uploads run together, as they always have; each row tracks its own job.
+        await Promise.all(queueItems.map(async rec => {
+            const jobId = await uploadDemo(rec);
+            if (jobId) await pollJob(rec, jobId);
+        }));
+        uploadBtn.disabled = false; uploadBtn.textContent = 'Upload & Process'; fileInput.value = '';
+        const hasError = queueItems.some(rec => rec.el.classList.contains('error'));
+        if (hasError) {
+            const retry = document.createElement('button');
+            retry.type = 'button'; retry.className = 'btn'; retry.style.cssText = 'margin-top:6px;align-self:flex-start';
+            retry.textContent = 'Reload Dashboard'; retry.onclick = () => location.reload();
+            queueEl.appendChild(retry);
+        } else { location.reload(); }
+    });
+})();
+</script>
+{% endblock %}

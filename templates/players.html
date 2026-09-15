@@ -1,0 +1,140 @@
+{% extends "_shell.html" %}
+{% block title %}CS2 Stats - Players{% endblock %}
+
+{% block head %}
+<style>
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; padding: 14px 24px; position: sticky; top: 0; z-index: 90; }
+    .topbar-title { font-size: 18px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase; color: white; }
+    .topbar-count { font-family: var(--font-mono); font-size: 11px; color: var(--dim); }
+    .topbar-spacer { flex: 1; }
+    .filter-search { background: var(--bg); border: 1px solid var(--border); color: var(--text); font-family: var(--font-ui); font-size: 12px; padding: 6px 8px; min-width: 180px; }
+    .filter-search:focus { outline: none; border-color: var(--accent); }
+    main { padding: 16px 24px 40px; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-lg); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th { position: sticky; top: 0; background: var(--panel); text-align: left; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--dim); font-weight: 700; padding: 9px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; user-select: none; }
+    th.sortable { cursor: pointer; } th.sortable:hover { color: var(--text); }
+    th .arrow { color: var(--accent); font-size: 9px; margin-left: 3px; }
+    th.num, td.num { text-align: right; }
+    tbody td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tbody tr.prow { cursor: pointer; transition: background .12s; }
+    tbody tr.prow:hover { background: var(--panel); }
+    tbody tr.hidden { display: none; }
+    .pname { font-weight: 700; color: white; }
+    .pname a { color: inherit; text-decoration: none; }
+    .pname a:hover { color: var(--accent); text-decoration: underline; }
+    .mono { font-family: var(--font-mono); }
+    .kd-hi { color: var(--win); } .kd-lo { color: var(--loss); }
+
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--dim); }
+    .empty-state .big { font-size: 44px; font-weight: 800; letter-spacing: 6px; color: var(--dimmer); display: block; margin-bottom: 10px; }
+    .empty-state p { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; }
+</style>
+{% endblock %}
+
+{% block content %}
+<header class="topbar">
+    <span class="topbar-title">Players</span>
+    <span class="topbar-count">{{ players|length }} unique player{% if players|length != 1 %}s{% endif %} across the corpus</span>
+    <div class="topbar-spacer"></div>
+    <input type="text" class="filter-search" id="psearch" placeholder="Search player…" autocomplete="off">
+</header>
+
+<main>
+{% if players %}
+<div class="table-wrap">
+    <table id="ptable">
+        <thead>
+            <tr>
+                <th style="width:28px"></th>
+                <th class="sortable" data-sort="name">Player<span class="arrow"></span></th>
+                <th class="sortable num" data-sort="matches">Matches<span class="arrow">▼</span></th>
+                <th class="sortable num" data-sort="kills">Kills<span class="arrow"></span></th>
+                <th class="sortable num" data-sort="deaths">Deaths<span class="arrow"></span></th>
+                <th class="sortable num" data-sort="assists">Assists<span class="arrow"></span></th>
+                <th class="sortable num" data-sort="adr">ADR<span class="arrow"></span></th>
+                <th class="sortable num" data-sort="hspct">HS%<span class="arrow"></span></th>
+                <th class="sortable num" data-sort="utilrating">Util Rating<span class="arrow"></span></th>
+                <th class="sortable num" data-sort="rating">Rating<span class="arrow"></span></th>
+            </tr>
+        </thead>
+        <tbody id="prows">
+            {% for p in players %}
+            <tr class="prow" data-name="{{ p.name|lower }}" data-href="{{ url_for('player_page', name=p.name) }}"
+                data-matches="{{ p.matches }}" data-kills="{{ p.kills }}" data-deaths="{{ p.deaths }}"
+                data-assists="{{ p.assists }}" data-adr="{{ p.adr }}"
+                data-hspct="{{ p.hsPct }}"
+                data-utilrating="{{ p.utilRating if p.utilRating is not none else '' }}"
+                data-rating="{{ p.rating if p.rating is not none else '' }}">
+                <td class="mono" style="color:var(--dim)">›</td>
+                <td class="pname"><a href="{{ url_for('player_page', name=p.name) }}">{{ p.name }}</a></td>
+                <td class="num mono">{{ p.matches }}</td>
+                <td class="num mono">{{ p.kills }}</td>
+                <td class="num mono">{{ p.deaths }}</td>
+                <td class="num mono">{{ p.assists }}</td>
+                <td class="num mono">{{ p.adr }}</td>
+                <td class="num mono">{{ p.hsPct }}%</td>
+                <td class="num mono">{% if p.utilRating is not none %}{{ p.utilRating }}{% else %}<span style="color:var(--dimmer)">-</span>{% endif %}</td>
+                <td class="num mono {% if p.rating is not none %}{{ 'kd-hi' if p.rating >= 1 else 'kd-lo' }}{% endif %}">{% if p.rating is not none %}{{ p.rating }}{% else %}<span style="color:var(--dimmer)">-</span>{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<div class="empty-state" id="no-results" style="display:none"><span class="big">NO PLAYERS</span><p>No players match the search</p></div>
+{% else %}
+<div class="empty-state"><span class="big">NO PLAYERS</span><p>Process some demos first</p></div>
+{% endif %}
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='fmt.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='maps.logic.js') }}"></script>
+<script>
+const state = { sort: 'matches', dir: 'desc', search: '' };
+const numeric = ['matches', 'kills', 'deaths', 'assists', 'adr', 'hspct', 'utilrating', 'rating'];
+const tbody = document.getElementById('prows');
+
+function apply() {
+    if (!tbody) return;
+    const rows = [...tbody.querySelectorAll('.prow')];
+    let visible = 0;
+    rows.forEach(row => {
+        const show = !state.search || row.dataset.name.includes(state.search);
+        row.classList.toggle('hidden', !show);
+        if (show) visible++;
+    });
+    rows.sort((a, b) => {
+        if (numeric.includes(state.sort)) {
+            const av = Number(a.dataset[state.sort]) || 0, bv = Number(b.dataset[state.sort]) || 0;
+            return state.dir === 'asc' ? av - bv : bv - av;
+        }
+        const av = a.dataset[state.sort] || '', bv = b.dataset[state.sort] || '';
+        return state.dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+    rows.forEach(row => tbody.appendChild(row));
+    document.getElementById('no-results').style.display = visible === 0 ? 'block' : 'none';
+    document.querySelectorAll('#ptable th.sortable').forEach(th => {
+        const ar = th.querySelector('.arrow');
+        ar.textContent = th.dataset.sort === state.sort ? (state.dir === 'asc' ? '▲' : '▼') : '';
+    });
+}
+document.querySelectorAll('#ptable th.sortable').forEach(th => th.addEventListener('click', () => {
+    const k = th.dataset.sort;
+    if (state.sort === k) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+    else { state.sort = k; state.dir = k === 'name' ? 'asc' : 'desc'; }
+    apply();
+}));
+document.getElementById('psearch')?.addEventListener('input', e => { state.search = e.target.value.trim().toLowerCase(); apply(); });
+// Click anywhere on a row to open that player's page (the name cell is also a
+// plain <a>, so middle-click/open-in-new-tab and no-JS both still work).
+tbody?.addEventListener('click', e => {
+    if (e.target.closest('a')) return;
+    const row = e.target.closest('.prow');
+    if (row && row.dataset.href) window.location.href = row.dataset.href;
+});
+
+apply();
+</script>
+{% endblock %}

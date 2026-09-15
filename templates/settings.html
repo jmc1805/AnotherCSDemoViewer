@@ -1,0 +1,702 @@
+{% extends "_shell.html" %}
+{% block title %}CS2 Stats - Settings{% endblock %}
+
+{% block head %}
+<style>
+    /* Type scale is fluid: `main` sets a viewport-clamped base and every child
+       size below is em-relative to it, so the page reads the same at a half
+       screen (~950px) as it does maximised on a 1080p/1440p monitor. */
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 14px; padding: 14px 24px; }
+    .topbar-title { font-size: clamp(18px, 1.4vw, 26px); font-weight: 800; letter-spacing: 3px; text-transform: uppercase; color: white; }
+    main { font-size: clamp(14px, 0.6vw + 9.5px, 19px); padding: clamp(18px, 1.6vw, 30px); max-width: min(100%, 62em);
+           margin-inline: auto; }
+    .card { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
+            padding: 1.4em 1.55em; margin-bottom: 1.25em; }
+    .card h3 { font-size: 0.92em; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); font-weight: 700; margin-bottom: 0.9em; padding-bottom: 0.6em; border-bottom: 1px solid var(--border); }
+    .kv { display: grid; grid-template-columns: minmax(9em, 15em) 1fr; gap: 0.6em 1.2em; font-size: 1em; }
+    .kv dt { color: var(--dim); text-transform: uppercase; letter-spacing: 1px; font-size: 0.85em; padding-top: 2px; }
+    .kv dd { font-family: var(--font-mono); color: var(--text); word-break: break-all; }
+    .yes { color: var(--win); } .no { color: var(--loss); }
+    .hint { font-size: 0.92em; color: var(--dim); line-height: 1.5; margin-top: 0.9em; }
+    a.rlink { color: var(--accent); text-decoration: none; } a.rlink:hover { text-decoration: underline; }
+    .cp-input { width: 100%; font-family: var(--font-mono); font-size: 0.92em; color: var(--text);
+                background: var(--panel, #10151d); border: 1px solid var(--border); border-radius: var(--radius-md);
+                padding: 0.35em 0.5em; }
+    .cp-btn { font-family: var(--font-ui); font-size: 0.85em; color: var(--text);
+              background: var(--panel, #10151d); border: 1px solid var(--border); border-radius: var(--radius-md);
+              padding: 0.4em 0.9em; cursor: pointer; margin-right: 0.6em; }
+    .cp-btn:hover { border-color: var(--accent); }
+    /* Browse… beside a path field. Desktop build only (pywebview's native
+       picker - a browser can never hand a page an absolute path), so hidden
+       until the page learns it runs in that window. min-width: 0 lets the input
+       shrink at a quarter window instead of pushing the button out. */
+    .pick-row { display: flex; gap: 0.4em; align-items: center; }
+    .pick-row .cp-input { flex: 1 1 auto; min-width: 0; }
+    .pick-row .cp-btn { flex: none; margin-right: 0; }
+    .pick-path[hidden] { display: none; }
+    .cp-log { max-height: 14em; overflow: auto; margin-top: 0.6em; padding: 0.6em 0.8em;
+              background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md);
+              font-family: var(--font-mono); font-size: 0.8em; line-height: 1.5;
+              color: var(--dim); white-space: pre-wrap; word-break: break-word; }
+    /* Collapsed by default: the instructions matter exactly once, and an open
+       wall of steps would push the controls they describe off the screen. */
+    .cp-details { margin-top: 0.9em; border: 1px solid var(--border); border-radius: var(--radius-md);
+                  background: var(--panel, #10151d); }
+    .cp-details > summary { cursor: pointer; padding: 0.55em 0.8em; font-size: 0.88em;
+                            letter-spacing: 1px; text-transform: uppercase; color: var(--dim); }
+    .cp-details > summary:hover { color: var(--accent); }
+    .cp-details[open] > summary { border-bottom: 1px solid var(--border); }
+    .cp-howto { padding: 0.2em 0.9em 0.9em; font-size: 0.92em; color: var(--dim); line-height: 1.6; }
+    .cp-howto ol { margin: 0.5em 0 0; padding-left: 1.4em; }
+    .cp-howto li { margin: 0.35em 0; }
+    .cp-howto p { margin-top: 0.9em; }
+    .cp-howto strong { color: var(--text); }
+    .cp-tools { width: 100%; border-collapse: collapse; font-size: 0.92em; margin-top: 0.8em; }
+    .cp-tools th { text-align: left; font-size: 0.8em; letter-spacing: 1px; text-transform: uppercase;
+                   color: var(--dim); padding: 0.3em 0.6em 0.5em 0; border-bottom: 1px solid var(--border); }
+    .cp-tools td { padding: 0.65em 0.6em 0.65em 0; vertical-align: top; border-bottom: 1px solid var(--border); line-height: 1.5; }
+    .cp-tname { font-family: var(--font-ui); font-weight: 700; color: white; white-space: nowrap; }
+    .cp-ack { display: flex; align-items: flex-start; gap: 0.6em; font-size: 0.92em; color: var(--text);
+              line-height: 1.5; margin-top: 0.8em; padding: 0.8em 0.9em; background: var(--panel, #10151d);
+              border: 1px solid var(--border); border-radius: var(--radius-md); }
+    .cp-ack input { margin-top: 0.25em; flex-shrink: 0; width: 1em; height: 1em; }
+    /* Capture options. A <select> and two checkboxes, sharing .cp-input's
+       shape so the card reads as one form rather than three widget styles. */
+    .cp-select { font-family: var(--font-mono); font-size: 0.92em; color: var(--text);
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius-sm); padding: 0.35em 0.5em; max-width: 22em; width: 100%; }
+    .cp-select:focus { outline: none; border-color: var(--accent); }
+    .cp-custom { display: flex; align-items: center; gap: 0.4em; margin-top: 0.5em; }
+    .cp-custom input { width: 6em; font-family: var(--font-mono); font-size: 0.92em;
+        color: var(--text); background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius-sm); padding: 0.35em 0.5em; }
+    .cp-custom[hidden] { display: none; }
+    .cp-toggles { display: flex; flex-wrap: wrap; gap: 0.4em 1.6em; margin-top: 0.7em; }
+    .cp-toggle { display: flex; align-items: center; gap: 0.5em; font-size: 0.92em; color: var(--text); }
+    .cp-toggle input { width: 1em; height: 1em; flex-shrink: 0; }
+    .cp-cost { font-family: var(--font-mono); }
+    .warn-card { border-color: var(--loss); }
+    .warn-card h3 { color: var(--loss); border-bottom-color: var(--loss); }
+</style>
+{% endblock %}
+
+{% block content %}
+<header class="topbar"><span class="topbar-title">Settings</span></header>
+<main>
+    <div class="card warn-card">
+        <h3>About the external tools below</h3>
+        <p class="hint" style="color: var(--text)">
+            Some cards below point this app at third-party programs (HLAE, ffmpeg,
+            Source2Viewer-CLI) that you download and install yourself. This app just stores
+            the path you give it and runs whatever is there - it can't check what that is.
+            So grab them from the official project pages, and verify checksums or signatures
+            where the project publishes them.
+        </p>
+    </div>
+    <div class="card">
+        <h3>Library</h3>
+        <dl class="kv">
+            <dt>Version</dt><dd>{{ info.version }}</dd>
+            <dt>Matches processed</dt><dd>{{ info.match_count }}</dd>
+            <dt>Total match data</dt><dd>{{ '%.1f'|format(info.total_bytes / 1048576) }} MB (brotli at rest)</dd>
+            <dt>Data directory</dt><dd>{{ info.data_dir }}</dd>
+        </dl>
+    </div>
+    <div class="card">
+        <h3>Features</h3>
+        <dl class="kv">
+            <dt>Demo parser</dt><dd class="{{ 'yes' if info.parser_bin else 'no' }}">{{ 'built' if info.parser_bin else 'not built' }}</dd>
+            <dt>Overwatch extractor</dt><dd class="{{ 'yes' if info.overwatch_bin else 'no' }}">{{ 'built' if info.overwatch_bin else 'not built' }}</dd>
+        </dl>
+        <p class="hint">
+            Both are built by <code>build.sh</code> (<code>build.bat</code> on Windows).
+            Reset the dashboard's column layout by clearing this browser's site data.
+        </p>
+    </div>
+    <div class="card">
+        <h3>CS2 Installation</h3>
+        <p class="hint">
+            Configured once here and shared by every tool below that needs it. Saved to
+            <code>data/analysis_data/cs2_game_dir</code>. This on its own is enough for the
+            <b>🎮 in CS2</b> buttons (kill log, Highlights, Overwatch moments, 2D replayer),
+            which just open the demo in CS2 at that moment.
+        </p>
+        <dl class="kv" style="margin-top:0.8em">
+            <dt>CS2 game directory</dt><dd><span class="pick-row"><input type="text" id="cs2-game-dir" class="cp-input"
+                value="{{ cs2_game_dir or '' }}" placeholder="C:\...\Counter-Strike Global Offensive"><button
+                type="button" class="cp-btn pick-path" data-for="cs2-game-dir" data-pick="folder" hidden>Browse…</button></span>
+                <span class="hint" style="margin:0.2em 0 0">The CS2 install dir - the one containing
+                    <code>game\bin\win64\cs2.exe</code> and <code>game\csgo\pak01_dir.vpk</code>.</span></dd>
+        </dl>
+        <p class="hint">
+            <button type="button" id="cs2dir-autodetect" class="cp-btn">Auto-detect</button>
+            <button type="button" id="cs2dir-save" class="cp-btn">Save</button>
+            <span id="cs2dir-status" class="{{ 'yes' if cs2_game_dir else 'no' }}">
+                {{ 'found' if cs2_game_dir else 'not configured' }}
+            </span>
+        </p>
+    </div>
+    <div class="card">
+        <h3>Clip Recording</h3>
+        <p class="hint">
+            Records real in-game CS2 footage for a flagged moment or highlight
+            (cs-demo-manager/HLAE style - see <code>clip_record.py</code>), entirely on this
+            machine.
+        </p>
+
+        <table class="cp-tools">
+            <tr><th>Tool</th><th>Used for</th><th>Notes</th></tr>
+            <tr>
+                <td class="cp-tname">ffmpeg</td>
+                <td>Encodes the captured frame sequence into the final .mp4.</td>
+                <td class="yes">Offline command-line encoder. Only reads the image files this
+                    app already wrote to disk - no game process, no network.</td>
+            </tr>
+            <tr>
+                <td class="cp-tname">HLAE</td>
+                <td>Frame-perfect capture + camera control while a demo plays back.</td>
+                <td class="no">Injects a hook DLL into the running CS2 process - see the note
+                    below before enabling this.</td>
+            </tr>
+        </table>
+
+        <p class="hint" style="margin-top:1.1em">{{ clip_risk_notice }}</p>
+        <label class="cp-ack">
+            <input type="checkbox" id="cp-ack" {{ 'checked' if clip_settings.vac_risk_ack else '' }}>
+            I understand the note above and will fully restart CS2 (without -insecure) before
+            playing any official/VAC-secured match after using this feature.
+        </label>
+
+        <dl class="kv" style="margin-top:0.8em">
+            <dt>HLAE</dt><dd><span class="pick-row"><input type="text" id="hlae-path" class="cp-input"
+                value="{{ clip_settings.hlae_path or '' }}" placeholder="C:\...\HLAE.exe"><button
+                type="button" class="cp-btn pick-path" data-for="hlae-path" data-pick="file" hidden>Browse…</button></span>
+                <span class="hint" style="margin:0.2em 0 0">Not bundled - download separately from
+                    <a class="rlink" href="https://github.com/advancedfx/advancedfx" target="_blank" rel="noopener">advancedfx.org</a>.</span></dd>
+            <dt>ffmpeg</dt><dd><span class="pick-row"><input type="text" id="ffmpeg-path" class="cp-input"
+                value="{{ clip_settings.ffmpeg_path or '' }}" placeholder="C:\...\ffmpeg.exe"><button
+                type="button" class="cp-btn pick-path" data-for="ffmpeg-path" data-pick="file" hidden>Browse…</button></span></dd>
+            <dt>Resolution</dt><dd>
+                <select id="clip-res" class="cp-select">
+                    {%- for r in clip_settings.resolution_presets %}
+                    <option value="{{ r.width or '' }}x{{ r.height or '' }}"
+                        {{ 'selected' if not clip_settings.resolution_is_custom
+                           and clip_settings.clip_width == r.width
+                           and clip_settings.clip_height == r.height else '' }}>{{ r.label }}</option>
+                    {%- endfor %}
+                    <option value="custom" {{ 'selected' if clip_settings.resolution_is_custom else '' }}>Custom…</option>
+                </select>
+                <div class="cp-custom" id="clip-res-custom" {{ '' if clip_settings.resolution_is_custom else 'hidden' }}>
+                    <input type="number" id="clip-w" min="320" max="7680" step="2"
+                        value="{{ clip_settings.clip_width or '' }}" placeholder="width">
+                    <span class="hint" style="margin:0">&times;</span>
+                    <input type="number" id="clip-h" min="320" max="4320" step="2"
+                        value="{{ clip_settings.clip_height or '' }}" placeholder="height">
+                </div>
+                <span class="hint" style="margin:0.35em 0 0" id="clip-res-hint"></span>
+            </dd>
+            <dt>Recorded overlay</dt><dd>
+                <div class="cp-toggles">
+                    <label class="cp-toggle">
+                        <input type="checkbox" id="clip-hud" {{ 'checked' if clip_settings.clip_hud else '' }}>
+                        Show HUD
+                    </label>
+                    <label class="cp-toggle">
+                        <input type="checkbox" id="clip-crosshair" {{ 'checked' if clip_settings.clip_crosshair else '' }}>
+                        Show crosshair
+                    </label>
+                </div>
+                <span class="hint" style="margin:0.35em 0 0">
+                    The HUD is off by default. Turn it on only if you want the
+                    scoreboard framing and can live with that.
+                </span>
+            </dd>
+        </dl>
+        <p class="hint">
+            <button type="button" id="cp-save" class="cp-btn">Save</button>
+            <span id="cp-status" class="{{ 'yes' if clip_settings.ready else 'no' }}">
+                {% if clip_settings.ready %}ready
+                {%- elif not clip_settings.vac_risk_ack %}not configured - risk notice unacknowledged
+                {%- else %}not configured{% endif %}
+            </span>
+        </p>
+    </div>
+    <div class="card">
+        <h3>UI Asset Extraction</h3>
+        <p class="hint">
+            Offline tool (tools/extract_ui_assets.*) that uses Source2Viewer-CLI 
+            to extract UI assets (skill groups, map icons, equipment) directly 
+            from CS2's .vpk files into static files. Requires the CS2 game directory
+            configured above. Run it here or via terminal-both use the saved path
+            below.
+        </p>
+        <dl class="kv" style="margin-top:0.8em">
+            <dt>Source2Viewer-CLI</dt><dd><span class="pick-row"><input type="text" id="s2v-path" class="cp-input"
+                value="{{ source2viewer_cli or '' }}" placeholder="C:\...\Source2Viewer-CLI.exe"><button
+                type="button" class="cp-btn pick-path" data-for="s2v-path" data-pick="file" hidden>Browse…</button></span>
+                <span class="hint" style="margin:0.2em 0 0">Separate download from the GUI -
+                    <a class="rlink" href="https://github.com/ValveResourceFormat/ValveResourceFormat/releases" target="_blank" rel="noopener">ValveResourceFormat releases</a>
+                    (the <code>cli-&lt;os&gt;-x64.zip</code> asset).</span></dd>
+        </dl>
+        <p class="hint">
+            <button type="button" id="s2v-save" class="cp-btn">Save</button>
+            <span id="s2v-status" class="{{ 'yes' if source2viewer_cli else 'no' }}">
+                {{ 'configured' if source2viewer_cli else 'not configured' }}
+            </span>
+        </p>
+
+        <dl class="kv" style="margin-top:0.8em">
+            <dt>Extracted icons</dt><dd id="assets-inventory" class="{{ 'yes' if assets.present else 'no' }}">
+                {%- if assets.present %}{{ assets.total }} images ·
+                    {% for kind, n in assets.kinds.items() %}{{ kind }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}
+                {%- else %}none yet - the app falls back to text labels{% endif -%}
+            </dd>
+        </dl>
+        <p class="hint">
+            <button type="button" id="assets-run" class="cp-btn">Extract now</button>
+            <button type="button" id="assets-manifest" class="cp-btn"
+                    title="Re-index the images already in static/assets/ - needs no CS2 files">Rebuild index only</button>
+            <span id="assets-status"></span>
+        </p>
+        <!-- The script prints a line per file; the last few are what make a
+             failure diagnosable (missing .vpk, wrong CLI path, …). -->
+        <pre id="assets-log" class="cp-log" style="display:none"></pre>
+    </div>
+
+    <div class="card">
+        <h3>Map Zone Extraction</h3>
+        <p class="hint">
+            Extracts official map callouts (e.g., LongA, MidDoors) from .vpk files
+            via Source2Viewer-CLI to power the Multi Match Analyser's Zone filter.
+            All calibrated maps are pre-included-only run this after map updates
+            or for new maps using the CS2 path and Source2Viewer-CLI set above.
+        </p>
+        <dl class="kv" style="margin-top:0.8em">
+            <dt>Zones extracted</dt><dd id="zones-inventory" class="{{ 'yes' if zones.present else 'no' }}">
+                {%- if zones.extracted %}{{ zones.extracted | length }} / {{ zones.calibrated | length }} maps
+                    {%- if zones.missing %} - missing {{ zones.missing | join(', ') }}{% endif -%}
+                {%- else %}none yet - the Zone filter stays hidden until a map has one{% endif -%}
+            </dd>
+        </dl>
+        <p class="hint">
+            <button type="button" id="zones-run" class="cp-btn">Extract now</button>
+            <span id="zones-status"></span>
+        </p>
+        <!-- Same idea as assets-log: a line per map, so a failure (missing
+             per-map .vpk, wrong CLI path) is diagnosable without a terminal. -->
+        <pre id="zones-log" class="cp-log" style="display:none"></pre>
+    </div>
+
+    {# The manual path. Deliberately its own card rather than a third button on
+       the one above: it needs neither CS2 nor Source2Viewer-CLI, so pairing it
+       with those requirements would imply it shares them. #}
+    <div class="card">
+        <h3>Import Icons Manually</h3>
+        <p class="hint">
+            An alternative to the extraction above, for machines that can't do it -
+            no CS2 install and no Source2Viewer-CLI needed, because the icons are
+            just image files. Extract them once on a machine that has the game, then
+            bring them here.
+        </p>
+
+        <details class="cp-details">
+            <summary>How to do this</summary>
+            <div class="cp-howto">
+                <p><strong>On a machine that has CS2</strong> (yours, or a friend's):</p>
+                <ol>
+                    <li>Set up the CS2 directory and Source2Viewer-CLI in the card above,
+                        then press <em>Extract now</em>. Or run
+                        <code>tools/extract_ui_assets.sh</code> (<code>.ps1</code> on Windows)
+                        from a terminal in a checkout of this app.</li>
+                    <li>That fills <code>static/assets/</code> with five folders:
+                        {% for k in asset_kinds %}<code>{{ k }}</code>{{ ', ' if not loop.last }}{% endfor %}.</li>
+                    <li>Zip that <code>assets</code> folder - the whole thing, folders and all.</li>
+                </ol>
+                <p><strong>Here:</strong> drop the .zip below with kind set to
+                    <em>Auto-detect</em> and press Import. The folder names inside tell it
+                    where everything goes, and the index is rebuilt for you. Reload any
+                    page afterwards to see the icons.</p>
+                <p class="hint" style="margin:0.6em 0 0">
+                    <strong>Loose images instead of a zip?</strong> That works too, but only
+                    some filenames say what they are -
+                    <code>skillgroup7.svg</code>, <code>map_icon_de_dust2.svg</code> and
+                    <code>de_nuke_radar_psd.png</code> route themselves. Weapon icons like
+                    <code>ak47.svg</code> carry no such marker, so pick
+                    <em>Equipment</em> (or whichever kind) explicitly instead of
+                    Auto-detect. Anything that can't be placed is listed back to you
+                    rather than guessed at. Accepted: .png, .jpg, .webp, .svg - files are
+                    flattened into the kind folder, and one with the same name is
+                    replaced.
+                </p>
+            </div>
+        </details>
+
+        <dl class="kv" style="margin-top:0.8em">
+            <dt>Files</dt>
+            <dd><input type="file" id="assets-import-files" class="cp-input"
+                       multiple accept=".zip,.png,.jpg,.jpeg,.webp,.svg">
+                <span class="hint" style="margin:0.2em 0 0">A .zip of the
+                    <code>assets</code> folder, or individual images.</span></dd>
+            <dt>Put them in</dt>
+            <dd><select id="assets-import-kind" class="cp-input">
+                    <option value="auto" selected>Auto-detect (use for a zip)</option>
+                    {% for k in asset_kinds %}<option value="{{ k }}">{{ k }}</option>{% endfor %}
+                </select></dd>
+        </dl>
+        <p class="hint">
+            <button type="button" id="assets-import-run" class="cp-btn">Import</button>
+            <span id="assets-import-status"></span>
+        </p>
+        <pre id="assets-import-log" class="cp-log" style="display:none"></pre>
+    </div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Desktop build only: native file pickers behind the Browse… buttons.
+// pywebview injects window.pywebview and fires 'pywebviewready' once its api
+// is callable; in a browser neither happens, the buttons stay hidden, and the
+// text fields work exactly as before. Picking only fills the field - the
+// card's own Save still saves it.
+function enablePathPickers() {
+    document.querySelectorAll('.pick-path').forEach(btn => {
+        btn.hidden = false;
+        btn.addEventListener('click', () => {
+            const input = document.getElementById(btn.dataset.for);
+            const api = window.pywebview.api;
+            const pick = btn.dataset.pick === 'folder' ? api.pick_folder(input.value)
+                                                       : api.pick_file(input.value);
+            pick.then(p => { if (p) input.value = p; })
+                .catch(e => console.error('picker failed', e));
+        });
+    });
+}
+if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) enablePathPickers();
+else window.addEventListener('pywebviewready', enablePathPickers, { once: true });
+
+function cs2dirStatus(d) {
+    const el = document.getElementById('cs2dir-status');
+    el.className = d.cs2_found ? 'yes' : 'no';
+    el.textContent = d.cs2_found ? 'found' : (d.cs2_game_dir ? 'set, but no cs2.exe found there' : 'not configured');
+    document.getElementById('cs2-game-dir').value = d.cs2_game_dir || '';
+}
+
+document.getElementById('cs2dir-save').addEventListener('click', () => {
+    fetch('/settings/cs2-game-dir', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ cs2_game_dir: document.getElementById('cs2-game-dir').value }),
+    }).then(r => r.json()).then(cs2dirStatus).catch(e => console.error('save failed', e));
+});
+
+document.getElementById('cs2dir-autodetect').addEventListener('click', () => {
+    fetch('/settings/cs2-game-dir', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ autodetect: true }),
+    }).then(r => r.json()).then(cs2dirStatus).catch(e => console.error('autodetect failed', e));
+});
+
+function cpStatus(d) {
+    const el = document.getElementById('cp-status');
+    el.className = d.ready ? 'yes' : 'no';
+    el.textContent = d.ready ? 'ready'
+        : (d.vac_risk_ack ? 'not configured' : 'not configured - risk notice unacknowledged');
+    document.getElementById('hlae-path').value = d.hlae_path || '';
+    document.getElementById('ffmpeg-path').value = d.ffmpeg_path || '';
+    document.getElementById('cp-ack').checked = !!d.vac_risk_ack;
+    // The server normalises the resolution (even dimensions, clamped range,
+    // both-or-neither), so echo what it actually stored rather than leaving
+    // the form showing the value that was typed. Entering 1921 and having
+    // the field silently stay 1921 while 1920 is saved is the kind of quiet
+    // disagreement that makes a setting untrustworthy.
+    cpSetResolution(d.clip_width, d.clip_height);
+    document.getElementById('clip-hud').checked = !!d.clip_hud;
+    document.getElementById('clip-crosshair').checked = !!d.clip_crosshair;
+}
+
+// ── Capture resolution ──────────────────────────────────────────────────────
+// The <select> carries "<w>x<h>" values plus the sentinels "x" (game default)
+// and "custom". Two number inputs appear only for "custom".
+const clipRes = document.getElementById('clip-res');
+const clipResCustom = document.getElementById('clip-res-custom');
+const clipW = document.getElementById('clip-w');
+const clipH = document.getElementById('clip-h');
+const clipResHint = document.getElementById('clip-res-hint');
+
+function cpResolutionValue() {
+    if (clipRes.value === 'custom') {
+        return { clip_width: +clipW.value || null, clip_height: +clipH.value || null };
+    }
+    const [w, h] = clipRes.value.split('x');
+    return { clip_width: +w || null, clip_height: +h || null };
+}
+
+function cpSetResolution(w, h) {
+    const match = [...clipRes.options].find(o => o.value === (w || '') + 'x' + (h || ''));
+    clipRes.value = match ? match.value : 'custom';
+    // Written in both branches, not just the custom one: saving 1281x721
+    // stores 1280x720, which IS a preset, so the select jumps to it - and
+    // leaving the (now hidden) custom fields on the odd numbers means they
+    // reappear as 1281x721 the next time Custom is picked, contradicting
+    // what is actually saved.
+    clipW.value = w || '';
+    clipH.value = h || '';
+    cpSyncResolutionUI();
+}
+
+// The intermediate frame sequence is UNCOMPRESSED TGA (HLAE's afxClassic
+// preset), so its size is w*h*3 per frame at 64 frames a second - about
+// 400 MB for every second of clip at 1080p, all of it on disk at once
+// before ffmpeg turns it into a ~13 MB .mp4. That is the single most
+// surprising consequence of raising the resolution, so it is stated next to
+// the control rather than discovered when a drive fills up.
+function cpSyncResolutionUI() {
+    const custom = clipRes.value === 'custom';
+    clipResCustom.hidden = !custom;
+    const { clip_width: w, clip_height: h } = cpResolutionValue();
+    if (!w || !h) {
+        clipResHint.textContent = 'Records at whatever resolution CS2 is set to.';
+        return;
+    }
+    const mbPerSec = Math.round(w * h * 3 * 64 / 1e6);
+    const odd = (w % 2) || (h % 2);
+    clipResHint.innerHTML = 'Raw frames while recording: <span class="cp-cost">~'
+        + mbPerSec + ' MB per second of clip</span> (uncompressed, deleted after encoding). '
+        + 'CS2 is launched windowed at this size.'
+        + (odd ? ' Odd values are rounded down to even - the encoder requires it.' : '');
+}
+
+clipRes.addEventListener('change', cpSyncResolutionUI);
+clipW.addEventListener('input', cpSyncResolutionUI);
+clipH.addEventListener('input', cpSyncResolutionUI);
+cpSyncResolutionUI();
+
+document.getElementById('cp-save').addEventListener('click', () => {
+    fetch('/settings/clip-paths', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            hlae_path: document.getElementById('hlae-path').value,
+            ffmpeg_path: document.getElementById('ffmpeg-path').value,
+            vac_risk_ack: document.getElementById('cp-ack').checked,
+            clip_hud: document.getElementById('clip-hud').checked,
+            clip_crosshair: document.getElementById('clip-crosshair').checked,
+            ...cpResolutionValue(),
+        }),
+    }).then(r => r.json()).then(cpStatus).catch(e => console.error('save failed', e));
+});
+
+// ── UI asset extraction ─────────────────────────────────────────────────
+// Fire-and-poll, same shape as the clip recorder: the script can take a
+// couple of minutes crawling the .vpk, so the button starts a background job
+// and this polls it, showing the script's own output as it goes.
+const assetsBtn      = document.getElementById('assets-run');
+const assetsManifest = document.getElementById('assets-manifest');
+const assetsStatus   = document.getElementById('assets-status');
+const assetsLog      = document.getElementById('assets-log');
+
+function assetsBusy(busy) {
+    assetsBtn.disabled = assetsManifest.disabled = busy;
+}
+
+function renderInventory(a) {
+    const el = document.getElementById('assets-inventory');
+    if (!a || !el) return;
+    el.className = a.present ? 'yes' : 'no';
+    el.textContent = a.present
+        ? `${a.total} images · ` + Object.entries(a.kinds).map(([k, n]) => `${k} ${n}`).join(', ')
+        : 'none yet - the app falls back to text labels';
+}
+
+function pollAssets(jobId) {
+    fetch('/settings/extract-assets/status/' + jobId).then(r => r.json()).then(d => {
+        if (!d.ok) { assetsStatus.className = 'no'; assetsStatus.textContent = d.error; assetsBusy(false); return; }
+        if (d.log && d.log.length) {
+            assetsLog.style.display = '';
+            assetsLog.textContent = d.log.join('\n');
+            assetsLog.scrollTop = assetsLog.scrollHeight;
+        }
+        if (d.state === 'error') {
+            assetsStatus.className = 'no';
+            assetsStatus.textContent = d.error;
+            assetsBusy(false);
+            return;
+        }
+        if (d.state === 'done') {
+            assetsStatus.className = 'yes';
+            assetsStatus.textContent = 'done - reload a page to see the icons';
+            renderInventory(d.assets);
+            assetsBusy(false);
+            return;
+        }
+        assetsStatus.className = '';
+        assetsStatus.textContent = d.message || 'working…';
+        setTimeout(() => pollAssets(jobId), 1200);
+    }).catch(() => {
+        assetsStatus.className = 'no';
+        assetsStatus.textContent = 'Lost track of the job.';
+        assetsBusy(false);
+    });
+}
+
+function startAssets(body) {
+    assetsBusy(true);
+    assetsStatus.className = '';
+    assetsStatus.textContent = 'starting…';
+    assetsLog.textContent = '';
+    fetch('/settings/extract-assets', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+    }).then(r => r.json()).then(d => {
+        if (!d.ok) { assetsStatus.className = 'no'; assetsStatus.textContent = d.error; assetsBusy(false); return; }
+        pollAssets(d.job_id);
+    }).catch(() => {
+        assetsStatus.className = 'no';
+        assetsStatus.textContent = 'Request failed.';
+        assetsBusy(false);
+    });
+}
+
+assetsBtn.addEventListener('click', () => startAssets({}));
+assetsManifest.addEventListener('click', () => startAssets({ manifest_only: true }));
+
+// ── map zone extraction ──────────────────────────────────────────────────
+// Same fire-and-poll shape as UI asset extraction above - a VPK crawl per
+// map, so this backgrounds it and shows the extractor's own per-map lines.
+const zonesBtn    = document.getElementById('zones-run');
+const zonesStatus = document.getElementById('zones-status');
+const zonesLog    = document.getElementById('zones-log');
+
+function renderZonesInventory(z) {
+    const el = document.getElementById('zones-inventory');
+    if (!z || !el) return;
+    el.className = z.present ? 'yes' : 'no';
+    el.textContent = z.extracted && z.extracted.length
+        ? `${z.extracted.length} / ${z.calibrated.length} maps`
+            + (z.missing && z.missing.length ? ' - missing ' + z.missing.join(', ') : '')
+        : 'none yet - the Zone filter stays hidden until a map has one';
+}
+
+function pollZones(jobId) {
+    fetch('/settings/extract-zones/status/' + jobId).then(r => r.json()).then(d => {
+        if (!d.ok) { zonesStatus.className = 'no'; zonesStatus.textContent = d.error; zonesBtn.disabled = false; return; }
+        if (d.log && d.log.length) {
+            zonesLog.style.display = '';
+            zonesLog.textContent = d.log.join('\n');
+            zonesLog.scrollTop = zonesLog.scrollHeight;
+        }
+        if (d.state === 'error') {
+            zonesStatus.className = 'no';
+            zonesStatus.textContent = d.error;
+            zonesBtn.disabled = false;
+            return;
+        }
+        if (d.state === 'done') {
+            zonesStatus.className = 'yes';
+            zonesStatus.textContent = 'done';
+            renderZonesInventory(d.zones);
+            zonesBtn.disabled = false;
+            return;
+        }
+        zonesStatus.className = '';
+        zonesStatus.textContent = d.message || 'working…';
+        setTimeout(() => pollZones(jobId), 1200);
+    }).catch(() => {
+        zonesStatus.className = 'no';
+        zonesStatus.textContent = 'Lost track of the job.';
+        zonesBtn.disabled = false;
+    });
+}
+
+zonesBtn.addEventListener('click', () => {
+    zonesBtn.disabled = true;
+    zonesStatus.className = '';
+    zonesStatus.textContent = 'starting…';
+    zonesLog.textContent = '';
+    fetch('/settings/extract-zones', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({}),
+    }).then(r => r.json()).then(d => {
+        if (!d.ok) { zonesStatus.className = 'no'; zonesStatus.textContent = d.error; zonesBtn.disabled = false; return; }
+        pollZones(d.job_id);
+    }).catch(() => {
+        zonesStatus.className = 'no';
+        zonesStatus.textContent = 'Request failed.';
+        zonesBtn.disabled = false;
+    });
+});
+
+// ── manual icon import ──────────────────────────────────────────────────
+// One request does the whole job (copy + reindex), so unlike the extraction
+// above there is no job to poll - the response already says what landed.
+const impFiles  = document.getElementById('assets-import-files');
+const impKind   = document.getElementById('assets-import-kind');
+const impBtn    = document.getElementById('assets-import-run');
+const impStatus = document.getElementById('assets-import-status');
+const impLog    = document.getElementById('assets-import-log');
+
+impBtn.addEventListener('click', () => {
+    const files = impFiles.files;
+    if (!files || !files.length) {
+        impStatus.className = 'no';
+        impStatus.textContent = 'Choose a .zip or some images first.';
+        return;
+    }
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    fd.append('kind', impKind.value);
+
+    impBtn.disabled = true;
+    impStatus.className = '';
+    impStatus.textContent = 'importing…';
+    impLog.style.display = 'none';
+    impLog.textContent = '';
+
+    fetch('/settings/import-assets', { method: 'POST', body: fd })
+        .then(r => r.json().then(d => ({ ok: r.ok, d })))
+        .then(({ d }) => {
+            if (!d.ok) { impStatus.className = 'no'; impStatus.textContent = d.error; return; }
+            // A successful copy whose index build failed is NOT a success: the
+            // files are on disk and still invisible to every page.
+            impStatus.className = d.total && d.manifest_ok ? 'yes' : 'no';
+            impStatus.textContent = d.total && d.manifest_ok
+                ? d.message + ' - reload a page to see them'
+                : (d.manifest_ok ? d.message : d.message + ' - but the index failed');
+            renderInventory(d.assets);
+
+            const lines = [d.message, d.manifest_message];
+            // Naming the files that didn't land is the whole point: "3 unrouted"
+            // is not actionable, "ak47.svg, awp.svg" tells you to pick Equipment.
+            if (d.unrouted && d.unrouted.length)
+                lines.push('', "Couldn't tell which kind these are - re-import them with a kind chosen:",
+                           ...d.unrouted.map(n => '  ' + n));
+            if (d.skipped && d.skipped.length)
+                lines.push('', 'Skipped (not an image, or too large):', ...d.skipped.map(n => '  ' + n));
+            if (d.truncated) lines.push('  … and more');
+            impLog.textContent = lines.join('\n');
+            impLog.style.display = '';
+        })
+        .catch(() => { impStatus.className = 'no'; impStatus.textContent = 'Request failed.'; })
+        .finally(() => { impBtn.disabled = false; });
+});
+
+document.getElementById('s2v-save').addEventListener('click', () => {
+    fetch('/settings/source2viewer-path', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            source2viewer_cli: document.getElementById('s2v-path').value,
+        }),
+    }).then(r => r.json()).then(d => {
+        const el = document.getElementById('s2v-status');
+        el.className = d.source2viewer_cli ? 'yes' : 'no';
+        el.textContent = d.source2viewer_cli ? 'configured' : 'not configured';
+        document.getElementById('s2v-path').value = d.source2viewer_cli || '';
+    }).catch(e => console.error('save failed', e));
+});
+</script>
+{% endblock %}

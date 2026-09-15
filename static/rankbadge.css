@@ -1,0 +1,213 @@
+/*
+ * rankbadge.css - how a CS2 rank looks, everywhere it is shown.
+ *
+ * A rank reaches the UI in one of two forms and they have to read as the same
+ * kind of thing:
+ *
+ *   .rank-ico    a Competitive or Wingman skill group, which has a real badge
+ *                image in the game files (static/assets/skillgroups/).
+ *   .rank-chip   a Premier rating, which is a number, plus the fallback for a
+ *                skill group when static/assets/ is absent. When the Premier
+ *                banner art HAS been extracted the same chip is painted on top
+ *                of it (see "the Premier banner" below) - it stays one element
+ *                either way, so no caller has to know which it got.
+ *
+ * Both are sized from one custom property, --rank-badge-h. That is the whole
+ * point of the file: the two forms sit in the same columns as each other, so
+ * a Premier rating rendered as small text next to a full-size skill-group
+ * image made one row look half-height and the column look broken. Set
+ * --rank-badge-h once on a container and the image and the number match.
+ * 26px is the one size every context now uses; the per-page declarations that
+ * remain are deliberate restatements, not different values.
+ *
+ * Loaded for every page by templates/_shell.html, ahead of each page's own
+ * {% block head %}, so a page can still override. The tier colours are the
+ * in-game Premier rating bands and are mirrored server-side by app.py's
+ * _ow_band_tier() (which colours rank *ranges* for the Overwatch dashboard)
+ * and client-side by MatchHeroLogic.premierTier() (which picks the class).
+ */
+
+:root {
+    /* 26px, not the 22px this started at. The banner is a parallelogram, and a
+       shallow diagonal at 22px on a 1x display reads as a staircase - measured,
+       it steps once every ~5 rows. That is a sampling limit, not an artefact of
+       the SVG: a plain CSS skew at the same size aliases identically, and the
+       same badge is clean at 2x DPR. Size is the only lever that exists, and it
+       costs nothing here - row height is unchanged on the match scoreboard and
+       the dashboard, and grows 4px on the players table. */
+    --rank-badge-h: 26px;
+
+    /* The tier palette, as properties rather than literals, because one place
+       needs the colours without the badge: the Overwatch dashboard tints rank
+       *band* cells with the same scale and has to re-declare the rules to out-
+       order its own table styles. Referencing these keeps that a cascade
+       detail instead of a second copy of the palette. */
+    --rank-sg:       #ffd35c;
+    --rank-sg-b:     #5a4a1a;
+    /* The seven Premier tier colours are TRANSCRIBED from the game, not picked
+       to taste: they are the @define color-csrating-tier-0..6 block in the
+       VPK's panorama/styles/rating_emblem.vcss_c. Earlier values here were
+       eyeballed approximations and were visibly wrong (pink read as magenta-
+       rose against Valve's violet #f03cff, blue as cyan against #6a7dff). The
+       borders have no in-game counterpart - the game draws a banner, not a
+       chip - so those stay derived: a dark, desaturated companion. Re-extract
+       after a game update rather than nudging these. */
+    --rank-p-gray:   #b0c3d9;
+    --rank-p-lblue:  #8cc6ff;
+    --rank-p-lblue-b:#1e3a4a;
+    --rank-p-blue:   #6a7dff;
+    --rank-p-blue-b: #23294a;
+    --rank-p-purple: #c166ff;
+    --rank-p-purple-b:#37244a;
+    --rank-p-pink:   #f03cff;
+    --rank-p-pink-b: #44194a;
+    --rank-p-red:    #eb4b4b;
+    --rank-p-red-b:  #4a2020;
+    --rank-p-gold:   #ffd700;
+    --rank-p-gold-b: #5a4a1a;
+
+    /* The number ON the banner, per tier. Also transcribed rather than chosen:
+       the game paints the rating white, washes it with the same tier colour as
+       the banner, then applies `brightness: 1.7` (rating_emblem.vcss_c's
+       .rating__value + `.tier-N .premier-rating Label`). These are that
+       product, per channel, clamped at 255.
+
+       That brightening is not decoration - it is what makes a band-coloured
+       number legible on a band-coloured plate. Against the washed plate the raw
+       tier colour lands at 3.2-4.9:1 (blue 3.32, red 3.23 - below AA), while
+       these land at 4.5-8.0:1, all passing. Tier 0 clamps to pure white, which
+       is simply what #b0c3d9 x 1.7 is. */
+    --rank-p-gray-n:   #ffffff;
+    --rank-p-lblue-n:  #eeffff;
+    --rank-p-blue-n:   #b4d4ff;
+    --rank-p-purple-n: #ffadff;
+    --rank-p-pink-n:   #ff66ff;
+    --rank-p-red-n:    #ff8080;
+    --rank-p-gold-n:   #ffff00;
+}
+
+.rank-ico {
+    height: var(--rank-badge-h);
+    width: auto;
+    vertical-align: middle;
+    image-rendering: auto;
+}
+
+.rank-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--rank-badge-h);
+    box-sizing: border-box;
+    padding: 0 7px;
+    vertical-align: middle;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    border: 1px solid var(--border-hi);
+    background: var(--panel);
+    color: var(--text);
+    cursor: default;
+}
+
+/* Competitive and Wingman share one gold: the group itself is named in the
+   tooltip, and eighteen separate colours would be noise, not information. */
+.rank-chip.sg       { color: var(--rank-sg);       border-color: var(--rank-sg-b); }
+
+/* Premier rating bands, in the game's own order and colours. The lowest band
+   takes the default border - a grey rating needs no emphasis. */
+.rank-chip.p-gray   { color: var(--rank-p-gray); }
+.rank-chip.p-lblue  { color: var(--rank-p-lblue);  border-color: var(--rank-p-lblue-b); }
+.rank-chip.p-blue   { color: var(--rank-p-blue);   border-color: var(--rank-p-blue-b); }
+.rank-chip.p-purple { color: var(--rank-p-purple); border-color: var(--rank-p-purple-b); }
+.rank-chip.p-pink   { color: var(--rank-p-pink);   border-color: var(--rank-p-pink-b); }
+.rank-chip.p-red    { color: var(--rank-p-red);    border-color: var(--rank-p-red-b); }
+.rank-chip.p-gold   { color: var(--rank-p-gold);   border-color: var(--rank-p-gold-b); }
+
+/*
+ * The Premier banner.
+ *
+ * CS2 ships ONE grey parallelogram and wash-colours it per tier at runtime
+ * (panorama/images/icons/ui/premier_rating_bg_large.svg +
+ * rating_emblem.vcss_c); assetindex.py (tint_premier) flattens that multiply
+ * into seven files and static/assets.js hands them here as --rank-banner-N,
+ * adding .has-premier-banner to <html>. Everything below is therefore gated on
+ * that class: with static/assets/ absent - the default state - not one rule
+ * applies and the chips above are exactly what they were.
+ *
+ * This is a restyle of the SAME element the five rank surfaces already emit,
+ * not a new one. That is the whole reason it can reach match.html, players,
+ * player, the hero band and the preprocessor without touching any of them.
+ */
+.has-premier-banner .rank-chip.p-gray   { --rank-banner: var(--rank-banner-0); color: var(--rank-p-gray-n); }
+.has-premier-banner .rank-chip.p-lblue  { --rank-banner: var(--rank-banner-1); color: var(--rank-p-lblue-n); }
+.has-premier-banner .rank-chip.p-blue   { --rank-banner: var(--rank-banner-2); color: var(--rank-p-blue-n); }
+.has-premier-banner .rank-chip.p-purple { --rank-banner: var(--rank-banner-3); color: var(--rank-p-purple-n); }
+.has-premier-banner .rank-chip.p-pink   { --rank-banner: var(--rank-banner-4); color: var(--rank-p-pink-n); }
+.has-premier-banner .rank-chip.p-red    { --rank-banner: var(--rank-banner-5); color: var(--rank-p-red-n); }
+.has-premier-banner .rank-chip.p-gold   { --rank-banner: var(--rank-banner-6); color: var(--rank-p-gold-n); }
+
+.has-premier-banner .rank-chip.p-gray,
+.has-premier-banner .rank-chip.p-lblue,
+.has-premier-banner .rank-chip.p-blue,
+.has-premier-banner .rank-chip.p-purple,
+.has-premier-banner .rank-chip.p-pink,
+.has-premier-banner .rank-chip.p-red,
+.has-premier-banner .rank-chip.p-gold {
+    background-image: var(--rank-banner);
+    /* The art is a parallelogram with transparent corners, so the chip's own
+       border and panel fill would draw a rectangle around it. */
+    background-color: transparent;
+    background-repeat: no-repeat;
+    /* 100% 100%, not `contain`: the game stretches it too (rating_emblem.css
+       sizes the emblem `width: height-percentage(250%)` against art that is
+       178x64 = 2.78), so squashing to the box is the faithful behaviour. */
+    background-size: 100% 100%;
+    border-color: transparent;
+    /* `color` is NOT set here - each tier rule above sets its own --rank-p-*-n,
+       so the number carries its band's hue (a pink banner gets a pink number),
+       the way the game does it. Those rules out-specify the plain `.rank-chip
+       .p-*` colours above via the .has-premier-banner prefix. */
+    /* Padding is in units of the badge HEIGHT, never percentages. A percentage
+       padding resolves against the CONTAINING BLOCK's width, not the element's
+       own - so the identical chip came out 76px wide in a narrow cell and 139px
+       in a wide one, drifting the number toward the banner's slanted right edge
+       and off the plate. Height is the one dimension that is actually fixed
+       here, and the art's aspect is 2.5, so 0.50h/0.35h reproduces the intended
+       20%/14% split at any size and in any container.
+
+       The asymmetry itself is measured, not taste: the unrated banner draws its
+       "- - -" across x 57..131 of 178, i.e. 32%-74% of the width, putting the
+       number's centre at ~53% rather than at 50%. */
+    padding: 0 calc(var(--rank-badge-h) * 0.35) 0 calc(var(--rank-badge-h) * 0.5);
+    min-width: calc(var(--rank-badge-h) * 2.5);
+    font-family: var(--font-mono);
+    /* Upright, not the game's Stratum2 Black *Italic*. At 11px in a dense table
+       the slant costs more legibility than it buys character, and these digits
+       are already working against a patterned plate. */
+    font-style: normal;
+    font-weight: 700;
+    /* A full dark outline, not the game's single drop shadow. The game can get
+       away with `text-shadow: 1px 1px 1px #000` because it draws the number at
+       18-60px; these digits are 11px and coloured rather than white, so they
+       need the extra separation from a plate that shares their hue. The
+       brightened palette does the real work - this keeps the thin strokes from
+       bleeding into the plate's own gradient and pattern. */
+    text-shadow:
+         0    1px  1px rgba(0, 0, 0, .95),
+         1px  0    1px rgba(0, 0, 0, .80),
+        -1px  0    1px rgba(0, 0, 0, .80),
+         0   -1px  1px rgba(0, 0, 0, .80),
+         0    0    5px rgba(0, 0, 0, .55);
+}
+
+/* A rank badge that follows a player's name on the same line. */
+.rank-inline { margin-left: 6px; }
+
+/* A rank stacked over a caption (the matches dashboard's Avg Rank column):
+   the badge takes its own line so the caption sits under it rather than
+   beside it, whichever of the two forms the badge happens to be. */
+.rank-stack .rank-ico  { display: block; }
+.rank-stack .rank-chip { display: flex; width: max-content; }

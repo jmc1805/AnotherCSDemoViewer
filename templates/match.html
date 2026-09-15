@@ -1,0 +1,2472 @@
+{% extends "_shell.html" %}
+{% block title %}CS2 Stats - Match{% endblock %}
+{% block head %}
+    <style>
+        /* No :root fork here. This page used to re-declare the whole
+           palette, and 12 of its 14 tokens were byte-identical to
+           _shell.html's - the two that differed were --dim #4a5a70 and
+           --dimmer #1e2a3a, i.e. exactly the retired pair the shell's own
+           comment documents as failing WCAG AA. They measured 2.8:1 and
+           1.4:1 here, so every caption and sub-label on the biggest page in
+           the app was rendered in the one colour the project had already
+           decided was unreadable. --gold was the only token worth keeping
+           and now lives in the shell. Inherit; don't fork. */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: var(--font-ui); background: var(--bg); color: var(--text); min-height: 100vh; }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-pill); }
+
+        /* .nav-link survives the top-nav removal: the Rounds & Kills tab's
+           "Open in replay" frag link (#frag-replay-link) reuses it. */
+        /* button.nav-link: the kill log's "Open in CS2" sits next to the
+           "Open in replay" link and has to read as its twin, so both element
+           types share the rule. */
+        a.nav-link, button.nav-link {
+            font-family: var(--font-ui); cursor: pointer;
+            font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+            text-decoration: none; border: 1px solid var(--border); padding: 6px 14px;
+            transition: color .15s, border-color .15s; white-space: nowrap; flex: 0 0 auto;
+        }
+        a.nav-link.back { color: var(--dim); }
+        a.nav-link.back:hover { color: var(--accent); border-color: var(--accent); }
+        a.nav-link.replay, button.nav-link.replay { color: var(--accent); border-color: rgba(0,194,255,.4); background: rgba(0,194,255,.07); }
+        a.nav-link.replay:hover, button.nav-link.replay:hover:not(:disabled) { background: rgba(0,194,255,.18); border-color: var(--accent); }
+        button.nav-link:disabled { opacity: .55; cursor: default; }
+
+        .hero {
+            background: var(--surface); border-bottom: 1px solid var(--border);
+            padding: 22px 32px; display: flex; align-items: center; gap: 32px; flex-wrap: wrap;
+        }
+        .hero-map { background: var(--panel); border-radius: var(--radius-md); padding: 10px 18px; }
+        .hero-map-ico { height: 44px; width: auto; display: block; margin-bottom: 6px; }
+        .hero-map-name { font-size: 28px; font-weight: 800; letter-spacing: 2px; text-transform: uppercase; color: white; line-height: 1; }
+        .hero-map-sub  { font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: var(--dim); margin-top: 3px; }
+        .result-badge { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; padding: 1px 6px; border-radius: var(--radius-sm); vertical-align: middle; margin-left: 8px; }
+        .result-badge.win  { background: rgba(61,220,132,.15); color: var(--win); }
+        .result-badge.loss { background: rgba(255,68,85,.12);  color: var(--loss); opacity:.6; }
+        .result-badge.draw { background: rgba(200,212,224,.08); color: var(--dim); }
+        .tfoot-side { font-weight: 700; letter-spacing: 1px; }
+        .tfoot-side.ct { color: var(--ct); }
+        .tfoot-side.t  { color: var(--t); }
+        .tfoot-sep { color: var(--dimmer); margin: 0 8px; }
+        .hero-pills { display: flex; flex-direction: column; gap: 5px; margin-left: auto; }
+        .meta-pill { font-family:var(--font-mono); font-size:11px; letter-spacing:1px; color:var(--dim); background:var(--panel); border-radius:var(--radius-sm); padding:3px 10px; }
+
+        /* Same "narrow band" treatment as the 2D viewer/analyser
+           (templates/index.html, static/fitview.js's short-window hero) -
+           icon beside the name instead of above it, pills packed into rows
+           instead of one tall column, so a short window doesn't burn ~160px
+           on the hero before the tabs and their content even start. This
+           page was previously exempt (it already scrolls once its tables
+           outgrow the window, so the hero's height was never load-bearing
+           the way it is on the no-scroll viewer) - kept anyway because a
+           shorter hero means less scrolling to reach the actual stats on
+           any window, and it costs nothing the tall version was using for. */
+        @media (min-width: 701px) and (max-height: 1100px) {
+            .hero { padding: 12px 20px; gap: 14px; }
+            .hero-map { display: grid; grid-template-columns: auto auto; column-gap: 12px; align-items: center; padding: 8px 14px; }
+            .hero-map-ico { grid-row: 1 / span 2; height: 36px; margin-bottom: 0; }
+            .hero-map-name, .hero-map-sub { grid-column: 2; }
+            .hero-map-name { font-size: 24px; }
+            .hero-pills { display: grid; grid-auto-flow: column; grid-template-rows: auto auto; gap: 5px 6px; }
+            .meta-pill { padding: 3px 7px; }
+        }
+
+        .tab-bar {
+            background: var(--surface); border-bottom: 1px solid var(--border);
+            /* Wraps rather than pushing the page into a horizontal scroll: the
+               seven tabs no longer fit one row at the half-screen width the
+               rest of the layout targets (~950px). */
+            display: flex; flex-wrap: wrap; padding: 0 32px;
+        }
+        .tab-btn {
+            font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+            color: var(--dim); background: transparent; border: none;
+            border-bottom: 2px solid transparent; padding: 14px 20px 12px;
+            cursor: pointer; transition: color .15s, border-color .15s; white-space: nowrap;
+        }
+        .tab-btn:hover { color: var(--text); }
+        .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+        /* 1280 was too tight for the widest table on the page (Combat &
+           Utility is 18 columns); the extra 160px is what lets its header
+           hints be legible at 11px instead of being traded away for
+           column width. Still 100% below 1440, so the narrow layout is
+           unchanged. */
+        main { max-width: min(100%, 1440px); margin: 0 auto; padding: 24px 32px 60px; }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
+        .section-title {
+            font-size: 10px; font-weight: 700; letter-spacing: 3px;
+            text-transform: uppercase; color: var(--dim);
+            padding-bottom: 8px; margin-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+            /* Heading + hint + optional toolbar on one line. Was two competing
+               `float:right` boxes, which overlap by definition - that is why
+               the Overwatch tab's Pro Match button sat on top of its hint. */
+            display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+        }
+
+        .team-block { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
+                      overflow: hidden; margin-bottom: 8px; }
+        .team-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+        .team-name { font-size: 13px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase; }
+        /* Fixed team identity colours - same blue/orange as the Duels
+           matrix's .dl-t1/.dl-t2 and the Heatmaps tab's roster caption, so
+           "Team 1" reads the same colour everywhere on this page regardless
+           of which side that team currently occupies. */
+        .team-name.team1 { color:#7ab8ff; }
+        .team-name.team2 { color:#ffaa22; }
+        .team-tfoot td { padding:6px 12px; font-family:var(--font-mono); font-size:11px; color:var(--dim); text-align:right; border-top:1px solid var(--border); background:var(--panel); }
+        .tfoot-total { font-size:14px; font-weight:700; color:var(--text); font-family:var(--font-ui); letter-spacing:1px; }
+
+        .tbl-scroll { overflow-x: auto; }
+        .stats-table { width: 100%; border-collapse: collapse; }
+        .stats-table thead th {
+            padding: 6px 8px; font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+            color: var(--dim); text-align: right; border-bottom: 1px solid var(--border);
+            white-space: nowrap; background: var(--panel);
+        }
+        .stats-table thead th:nth-child(1) { text-align:center; min-width:28px; }
+        .stats-table thead th:nth-child(2) { text-align:left; min-width:140px; position:sticky; left:0; z-index:1; }
+        .stats-table thead th .th-hint { display:block; font-size:11px; color:var(--dimmer); letter-spacing:.5px;
+                                 text-transform:none; font-weight:400; margin-top:2px;
+                                 white-space:nowrap; line-height:1.25; }
+        .stats-table tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+        .stats-table tbody tr:last-child { border-bottom: none; }
+        .stats-table tbody tr:hover { background: rgba(255,255,255,.025); }
+        .stats-table tbody td { padding: 7px 8px; font-family:var(--font-mono); font-size:13px; text-align:right; color:var(--text); white-space:nowrap; }
+        .stats-table tbody td:nth-child(1) { text-align:center; }
+        .stats-table tbody td:nth-child(2) { text-align:left; font-family:var(--font-ui); font-size:15px; font-weight:700; color:white; position:sticky; left:0; background:var(--surface); z-index:1; }
+        .stats-table tbody tr:hover td:nth-child(2) { background:#131e2c; }
+
+        /* §5.3 Steam profile link on player names (inherits the cell colour). */
+        .steam-link { color: inherit; text-decoration: none; }
+        .steam-link:hover { color: var(--accent); text-decoration: underline; }
+
+        .rank-num { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; font-size:10px; font-family:var(--font-ui); font-weight:700; color:var(--dim); background:var(--border); }
+        .rank-num.gold   { background:rgba(240,180,41,.2);   color:var(--gold); }
+        .rank-num.silver { background:rgba(200,212,224,.15); color:#aab; }
+        .rank-num.bronze { background:rgba(200,130,60,.15);  color:#c87; }
+
+        /* Rank badges themselves come from static/rankbadge.css; only the
+           size for this page's hero context lives here. */
+        /* Avg-rank hero pill: badge sits inline with the "AVG RANK" caption,
+           one size up from the scoreboard's, both forms following it. */
+        #hero-rank { display:flex; align-items:center; gap:8px; --rank-badge-h:26px; }
+        #hero-rank .hero-rank-cap { font-size:9px; letter-spacing:2px; text-transform:uppercase; color:var(--dim); }
+
+        .c-green  { color:var(--win)  !important; }
+        .c-red    { color:var(--loss) !important; }
+        .c-gold   { color:var(--gold) !important; }
+        .c-blue   { color:var(--ct)   !important; }
+        .c-orange { color:var(--t)    !important; }
+        .c-dim    { color:var(--dim)  !important; }
+
+        .kda { display:inline-flex; gap:2px; align-items:baseline; }
+        .kda .k { color:#7ab8ff; } .kda .d { color:#ff7070; } .kda .a { color:#88bb88; }
+        .kda .sep { color:var(--dim); font-size:10px; }
+
+        .rating-badge { display:inline-block; padding:1px 6px; font-size:13px; font-weight:700; border-radius: var(--radius-sm); }
+        .rating-badge.elite  { background:rgba(240,180,41,.18); color:var(--gold); }
+        .rating-badge.good   { background:rgba(61,220,132,.15); color:var(--win); }
+        .rating-badge.ok     { background:rgba(200,212,224,.08); color:var(--text); }
+        .rating-badge.bad    { background:rgba(255,68,85,.12);  color:var(--loss); }
+
+        .mk-row { display:flex; gap:3px; justify-content:flex-end; }
+        .mk-badge { display:inline-flex; align-items:center; justify-content:center; min-width:22px; height:18px; padding:0 4px; font-size:10px; font-weight:700; border-radius: var(--radius-sm); font-family:var(--font-ui); }
+        .mk-2 { background:rgba(74,158,255,.15); color:var(--ct); }
+        .mk-3 { background:rgba(61,220,132,.15); color:var(--win); }
+        .mk-4 { background:rgba(240,180,41,.2);  color:var(--gold); }
+        .mk-5 { background:rgba(255,68,85,.2);   color:var(--loss); }
+
+        /* Icon-forward round pills - same visual language as viewer.js's round
+           nav and multi.js's round grid: win-condition icon dominant, round
+           number a corner badge, winner side a colored top bar + small corner
+           letter (redundant color+text so it stays colorblind-legible). */
+        .round-history { display:flex; gap:4px; flex-wrap:wrap; padding:4px 0; }
+        .round-pill { --wc:transparent; position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; width:44px; height:44px; padding:0; overflow:hidden; background:var(--panel); border:1px solid var(--border); border-radius: var(--radius-sm); font-family:var(--font-mono); }
+        .round-pill::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; background:var(--wc); opacity:.9; }
+        .round-pill .rnum { position:absolute; top:5px; left:6px; font-size:9px; color:var(--dim); font-weight:700; line-height:1; }
+        .round-pill .rside { position:absolute; top:5px; right:6px; font-size:8px; font-weight:700; letter-spacing:.5px; }
+        .round-pill .rside.ct { color:var(--ct); }
+        .round-pill .rside.t  { color:var(--t); }
+        .round-pill .rreason { font-size:20px; margin-top:3px; line-height:1; }
+        .round-pill .rreason-ico { width:20px; height:20px; object-fit:contain; opacity:.95; }
+        .round-pill.all-pill { font-size:12px; font-weight:700; color:var(--text); }
+        .round-divider { width:2px; background:var(--border); align-self:stretch; border-radius:var(--radius-pill); margin:0 2px; }
+
+        .round-pill.clickable { cursor:pointer; transition:border-color .12s; }
+        .round-pill.clickable:hover { border-color:var(--accent); }
+        .round-pill.active { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+
+        /* Economy - 3 small-multiple diverging bar rows (Equipment/Cash/Spent),
+           CT growing up from a shared baseline, T growing down; one column per
+           round, aligned in spirit with the round-history pills above. Each
+           row keeps its own y-scale (different metrics, different ranges -
+           never share an axis across them). */
+        .econ-title { margin-top:18px; }
+        .econ-panel { display:flex; flex-direction:column; gap:10px; margin:10px 0 6px; }
+        .econ-row { display:flex; align-items:center; gap:10px; }
+        .econ-label { width:40px; flex-shrink:0; font-family:var(--font-ui); font-size:10px; letter-spacing:1px; text-transform:uppercase; color:var(--dim); }
+        .econ-bars { display:flex; align-items:stretch; gap:2px; flex:1; height:60px; overflow-x:auto; overflow-y:hidden; }
+        .econ-col { display:flex; flex-direction:column; width:14px; flex-shrink:0; cursor:pointer; border-radius:var(--radius-xs); transition:background .1s; }
+        .econ-col:hover, .econ-col.highlight { background:rgba(0,194,255,.1); }
+        .econ-col .ct-bar { margin-top:auto; width:100%; background:var(--ct); border-radius:var(--radius-xs) var(--radius-xs) 0 0; opacity:.65; transition:opacity .1s; }
+        .econ-col .baseline { height:1px; background:var(--border); flex-shrink:0; }
+        .econ-col .t-bar { width:100%; background:var(--t); border-radius:0 0 var(--radius-xs) var(--radius-xs); opacity:.65; transition:opacity .1s; }
+        .econ-col:hover .ct-bar, .econ-col:hover .t-bar,
+        .econ-col.highlight .ct-bar, .econ-col.highlight .t-bar { opacity:1; }
+        .econ-col.empty .baseline { background:var(--border); opacity:.4; }
+        .econ-empty { font-family:var(--font-ui); color:var(--dimmer); font-size:11px; padding:6px 0 4px; }
+
+        .sec-count { color:var(--accent); margin-left:8px; letter-spacing:1px; }
+        .sec-hint  { margin-left:auto; text-align:right; color:var(--dimmer); text-transform:none;
+                     letter-spacing:.5px; font-weight:400; font-size:12px; }
+        /* Sits after the hint, so the hint keeps the slack and the button
+           never lands on top of it. */
+        .ow-toolbar { display:flex; align-items:center; gap:8px; }
+        .ow-pro-match-btn { font-family:var(--font-ui);
+                            font-size:10px; letter-spacing:1px; padding:3px 10px; border-radius: var(--radius-sm);
+                            border:1px solid var(--border); background:transparent; color:var(--dim);
+                            cursor:pointer; transition:all .15s; text-transform:none; font-weight:400; }
+        .ow-pro-match-btn:hover          { color:var(--text); border-color:var(--dim); }
+        .ow-pro-match-btn.active         { color:#64b4ff; border-color:rgba(100,180,255,.6);
+                                           background:rgba(100,180,255,.12); }
+
+        .rk-layout { display:flex; gap:20px; align-items:flex-start; margin-top:20px; }
+        .rk-left { flex:1; min-width:0; }
+        /* Map panel shrinks with the window (half-screen) so the kill log and
+           the map stay side by side; stacking is only for very narrow windows */
+        .rk-map-panel { width:clamp(300px, 36vw, 420px); flex-shrink:0; position:sticky; top:68px; }
+        #fragCanvas { width:100%; aspect-ratio:1; display:block; background:var(--bg); border:1px solid var(--border-soft); border-radius:var(--radius-md); }
+        .frag-caption { margin-top:8px; font-family:var(--font-ui); font-size:11px; color:var(--dim); line-height:1.6; }
+        .frag-caption .ct { color:#7ab8ff; }
+        .frag-caption .t  { color:var(--t); }
+        .frag-caption .hs { color:#ff7070; }
+        .frag-replay { margin-top:10px; }
+        @media (max-width:780px) {
+            .rk-layout { flex-direction:column; }
+            .rk-map-panel { width:100%; position:static; }
+        }
+
+        /* ── §5.2 Duels matrix ─────────────────────────────────────────────── */
+        .duels-wrap { margin-top:16px; overflow-x:auto; }
+        .duels-table { border-collapse:collapse; font-family:var(--font-mono); font-size:12px; }
+        .duels-table th, .duels-table td { border:1px solid var(--border); padding:5px 7px; text-align:center; min-width:30px; }
+        .duels-table th.dl-corner { text-align:right; }
+        .duels-table th.dl-col { font-family:var(--font-ui); font-weight:700; height:96px; }
+        .duels-table th.dl-col span { display:inline-block; writing-mode:vertical-rl; transform:rotate(180deg); white-space:nowrap; max-height:88px; overflow:hidden; text-overflow:ellipsis; }
+        .duels-table th.dl-row { text-align:right; font-family:var(--font-ui); font-weight:700; color:#fff; white-space:nowrap; position:sticky; left:0; background:var(--surface); z-index:1; }
+        .duels-table td.dl-self { background:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,.04) 4px,rgba(255,255,255,.04) 8px); color:var(--dimmer); }
+        .duels-table td.dl-zero { color:var(--dimmer); }
+        .duels-table td.dl-hit  { color:#fff; font-weight:700; }  /* cell shade = win% vs 50/50 (green row-favoured, red column-favoured) */
+        .duels-table td.dl-tot, .duels-table th.dl-tot { font-weight:700; background:rgba(255,255,255,.03); color:#fff; }
+        .dl-t1 { color:#7ab8ff; }  /* Team 1 (first-half CT) - shared with the heatmap roster caption */
+        .dl-t2 { color:#ffaa22; }  /* Team 2 */
+        .duels-table td.dl-teamsplit, .duels-table th.dl-teamsplit { border-left:2px solid var(--dim); }
+        .duels-table tr.dl-teamsplit td, .duels-table tr.dl-teamsplit th { border-top:2px solid var(--dim); }
+
+        /* ── §5.1 Heatmaps ─────────────────────────────────────────────────── */
+        .heat-layout { display:flex; gap:20px; align-items:flex-start; margin-top:20px; }
+        .heat-controls { width:230px; flex-shrink:0; display:flex; flex-direction:column; gap:14px; }
+        .heat-map-wrap { flex:1; min-width:0; position:relative; max-width:820px; }
+        #heatCanvas { width:100%; aspect-ratio:1; display:block; background:var(--bg); border:1px solid var(--border-soft); border-radius:var(--radius-md); }
+        .heat-legend { margin-top:8px; display:flex; flex-direction:column; gap:3px; }
+        .heat-legend-row { display:flex; align-items:center; gap:5px; font-family:var(--font-mono);
+            font-size:11px; color:var(--dim); }
+        .heat-legend-row .heat-swatch { width:14px; height:11px; border-radius:var(--radius-xs); }
+        .heat-legend-l { min-width:118px; color:var(--text); }
+        .heat-legend-r { margin-left:6px; color:var(--dimmer); }
+        .heat-legend-note { color:var(--gold,#f0b429); line-height:1.5; }
+        .heat-empty { position:absolute; top:0; left:0; right:0; aspect-ratio:1;
+            display:flex; align-items:center; justify-content:center; text-align:center;
+            font-family:var(--font-ui); font-size:12px; color:var(--dim); pointer-events:none; padding:20px; }
+        .heat-group { border:1px solid var(--border-soft); border-radius:var(--radius-md); padding:9px 11px; background:var(--surface); }
+        .heat-group h4 { font-family:var(--font-ui); font-size:11px; letter-spacing:2px; text-transform:uppercase; color:var(--dim); margin:0 0 8px; }
+        .heat-check { display:flex; align-items:center; gap:7px; font-size:12px; color:var(--text); padding:2px 0; cursor:pointer; }
+        .heat-check input { accent-color:var(--accent); cursor:pointer; }
+        .heat-swatch { width:11px; height:11px; border-radius:var(--radius-xs); flex-shrink:0; }
+        .heat-seg { display:flex; gap:4px; flex-wrap:wrap; }
+        .heat-seg button { flex:1; min-width:0; font-family:var(--font-ui); font-size:11px; padding:5px 4px; border:1px solid var(--border);
+            background:transparent; color:var(--dim); border-radius: var(--radius-sm); cursor:pointer; }
+        .heat-seg button.active { border-color:var(--accent); background:rgba(74,158,255,.12); color:var(--accent); }
+        .heat-roster { margin-top:8px; padding-top:8px; border-top:1px solid var(--border); font-family:var(--font-narrow); font-size:10.5px; color:var(--dim); line-height:1.6; }
+        .heat-roster span { font-weight:700; margin-right:5px; }
+        .heat-round { width:100%; font-family:var(--font-ui); font-size:12px; padding:6px; background:var(--panel); color:var(--text);
+            border:1px solid var(--border); border-radius: var(--radius-sm); }
+        @media (max-width:780px) {
+            .heat-layout { flex-direction:column; }
+            .heat-controls { width:100%; }
+            .heat-map-wrap { max-width:none; }
+        }
+
+        /* Overwatch tab */
+        .ow-status { font-family:var(--font-ui); font-size:12px; color:var(--dim); padding:12px 0; }
+        .ow-status.error { color:var(--loss); white-space:pre-wrap; }
+        .ow-note { font-family:var(--font-ui); font-size:11px; color:var(--dimmer); margin-top:20px; line-height:1.7; max-width:960px; }
+
+        /* Legend - collapsed by default so it doesn't compete with the cards */
+        .ow-legend { background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-md);
+                     margin:10px 0 16px; max-width:960px; }
+        .ow-legend summary { font-family:var(--font-ui); font-size:11px; letter-spacing:.5px;
+                              color:var(--dim); padding:8px 12px; cursor:pointer; user-select:none; list-style:none; }
+        .ow-legend summary::-webkit-details-marker { display:none; }
+        .ow-legend summary:hover { color:var(--text); }
+        .ow-legend summary::before { content:'▸ '; color:var(--dimmer); }
+        .ow-legend[open] summary::before { content:'▾ '; }
+        .ow-legend-body { padding:2px 14px 12px; font-family:var(--font-ui);
+                           font-size:11px; color:var(--dim); line-height:1.7; border-top:1px solid var(--border); }
+        .ow-legend-body dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 10px; margin:8px 0 0; }
+        .ow-legend-body dt { color:var(--text); white-space:nowrap; }
+        .ow-legend-body dd { margin:0; color:var(--dim); }
+
+        /* All-players summary strip - a dot-plot over the 0-100 percentile
+           axis every feature row already uses (.ow-bar/.ow-pct below), so
+           this reuses that same scale rather than inventing a new one. Plain
+           DOM/CSS on purpose: no canvas-chart precedent exists anywhere in
+           this repo, and a single value already has a repo-wide convention
+           (the width-bar) this just extends to many players at once. */
+        .ow-summary { background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-lg);
+                      margin:10px 0 16px; padding:12px 16px 16px; max-width:960px; }
+        .ow-summary-head { display:flex; align-items:baseline; gap:10px; margin-bottom:10px; }
+        .ow-summary-title { font-family:var(--font-ui); font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:var(--dim); }
+        .ow-summary-select { font-family:var(--font-ui); font-size:11px; padding:3px 6px; margin-left:auto;
+                              background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:var(--radius-sm); }
+        /* Heights/tops below are mostly set inline by drawOwSummaryTrack(),
+           not here: a name label is only as tall as it needs to be, and how
+           many rows of them stack above the dot line depends on how many
+           players land close enough on the percentile axis to collide - so
+           the track's height and every element's vertical offset are
+           computed per-draw from measured label widths, not fixed in CSS. */
+        .ow-summary-track { position:relative; margin:6px 2px 4px; }
+        .ow-summary-grid { position:absolute; top:0; width:1px; background:var(--border); }
+        .ow-summary-grid span { position:absolute; transform:translateX(-50%); font-family:var(--font-mono); font-size:9px; color:var(--dimmer); }
+        .ow-summary-baseline { position:absolute; left:0; right:0; height:1px; background:var(--border-soft); }
+        .ow-summary-dot { position:absolute; width:11px; height:11px; border-radius:50%;
+                           transform:translate(-50%,-50%); border:1px solid var(--bg); cursor:default; z-index:1; }
+        .ow-summary-dot.low          { background:var(--win); }
+        .ow-summary-dot.elevated     { background:var(--gold); }
+        .ow-summary-dot.high         { background:var(--loss); }
+        .ow-summary-dot.insufficient { background:var(--dimmer); }
+        .ow-summary-dot.verified_pro { background:#64b4ff; }
+        /* Name label directly on the strip - added so a dot's identity is
+           visible at a glance instead of needing a hover. Row-packed above
+           its dot (drawOwSummaryTrack's collision pass) rather than
+           centered on it, so it never sits on top of, or is clipped by, a
+           neighbour with a close percentile. Colour matches the dot it
+           labels, the same "colour carries meaning" convention as the level
+           border on the card below. */
+        .ow-summary-name { position:absolute; font-family:var(--font-ui); font-size:9.5px; font-weight:700;
+                            white-space:nowrap; line-height:1; pointer-events:none; }
+        .ow-summary-name.low          { color:var(--win); }
+        .ow-summary-name.elevated     { color:var(--gold); }
+        .ow-summary-name.high         { color:var(--loss); }
+        .ow-summary-name.insufficient { color:var(--dim); }
+        .ow-summary-name.verified_pro { color:#64b4ff; }
+        .ow-summary-missing { font-family:var(--font-ui); font-size:10.5px; color:var(--dimmer); margin-top:4px; }
+
+        /* Card shell - left accent border signals overall level at a glance */
+        .ow-card { background:var(--surface); border:1px solid var(--border-soft); border-left:3px solid var(--border);
+                   border-radius:var(--radius-lg); margin-bottom:16px; overflow:hidden; }
+        .ow-card.level-high        { border-left-color:rgba(255,68,85,.85); }
+        .ow-card.level-elevated    { border-left-color:rgba(240,180,41,.75); }
+        .ow-card.level-low         { border-left-color:rgba(61,220,132,.55); }
+        .ow-card.level-insufficient{ border-left-color:var(--border); }
+        .ow-card.level-verified_pro{ border-left-color:rgba(100,180,255,.7); }
+        .ow-card.labeled-cheater       { outline:1px solid rgba(255,68,85,.45); }
+        .ow-card.labeled-clean         { outline:1px solid rgba(61,220,132,.3); }
+        .ow-card.labeled-suspicious    { outline:1px solid rgba(240,180,41,.35); }
+        .ow-card.labeled-professional  { outline:1px solid rgba(100,180,255,.4); }
+
+        /* Card header */
+        .ow-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+                   padding:11px 16px 10px; border-bottom:1px solid var(--border);
+                   background:rgba(255,255,255,.015); }
+        .ow-name  { font-family:var(--font-ui); font-size:22px; font-weight:700; color:white; }
+        .ow-meta  { font-family:var(--font-mono); font-size:11px; color:var(--dim); }
+        .ow-steamid { color:var(--dim); text-decoration:none; }
+        .ow-steamid:hover { color:var(--accent); text-decoration:underline; }
+        .ow-level { font-family:var(--font-ui); font-size:10px; font-weight:700;
+                    letter-spacing:1.5px; padding:3px 10px; border-radius: var(--radius-sm); border:1px solid;
+                    margin-left:auto; white-space:nowrap; }
+        /* Option 2: composite z-score badge */
+        .ow-composite { font-family:var(--font-mono); font-size:10px; letter-spacing:1px;
+                        padding:3px 9px; border-radius: var(--radius-sm); border:1px solid var(--border);
+                        white-space:nowrap; color:var(--dim); }
+        .ow-composite.z-warm { color:var(--gold); border-color:rgba(240,180,41,.4); background:rgba(240,180,41,.07); }
+        .ow-composite.z-hot  { color:var(--loss); border-color:rgba(255,68,85,.4);  background:rgba(255,68,85,.08); }
+        .ow-composite.shrunk { opacity:.7; border-style:dashed; }
+        .ow-level.low          { color:var(--win);    border-color:rgba(61,220,132,.4);  background:rgba(61,220,132,.08); }
+        .ow-level.elevated     { color:var(--gold);   border-color:rgba(240,180,41,.4);  background:rgba(240,180,41,.08); }
+        .ow-level.high         { color:var(--loss);   border-color:rgba(255,68,85,.5);   background:rgba(255,68,85,.1);   }
+        .ow-level.insufficient { color:var(--dimmer); border-color:var(--border); }
+        .ow-level.verified_pro { color:#64b4ff;       border-color:rgba(100,180,255,.45); background:rgba(100,180,255,.08); }
+        .ow-label-row { display:flex; align-items:center; gap:5px; }
+        .ow-lbl-btn { font-family:var(--font-ui); font-size:10px; letter-spacing:1px;
+                      padding:3px 8px; border-radius: var(--radius-sm); border:1px solid var(--border);
+                      background:transparent; color:var(--dim); cursor:pointer; transition:all .15s; }
+        .ow-lbl-btn:hover                 { color:var(--text); border-color:var(--dim); }
+        .ow-lbl-btn.active-clean          { color:var(--win);  border-color:rgba(61,220,132,.6);  background:rgba(61,220,132,.12); }
+        .ow-lbl-btn.active-suspicious     { color:var(--gold); border-color:rgba(240,180,41,.6);  background:rgba(240,180,41,.12); }
+        .ow-lbl-btn.active-cheater        { color:var(--loss); border-color:rgba(255,68,85,.6);   background:rgba(255,68,85,.12);  }
+        .ow-lbl-btn.active-professional   { color:#64b4ff;     border-color:rgba(100,180,255,.6); background:rgba(100,180,255,.12); }
+
+        /* Card body */
+        .ow-body { padding:14px 16px; }
+        /* 440px, not 280px: the Indicator column is the information here, and at
+           280 the groups packed 3-across and squeezed it to ~150px, ellipsing
+           nearly every label. At 440 a 1920px card is 2 groups across and a
+           950px one is a single column, and no label truncates at either. */
+        .ow-groups { display:grid; grid-template-columns:repeat(auto-fit, minmax(440px, 1fr)); gap:20px; }
+
+        /* Feature group */
+        .ow-group-title { font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--dim);
+                          padding-bottom:5px; border-bottom:1px solid var(--border); margin-bottom:4px; }
+        .ow-feat-cols { display:grid; grid-template-columns:minmax(140px,1.8fr) 62px 1fr 44px; gap:6px;
+                        font-family:var(--font-mono); }
+        .ow-feat-cols.with-cheat { grid-template-columns:minmax(140px,1.8fr) 62px 1fr 44px 56px; }
+        .ow-feat-header { font-size:9px; letter-spacing:1px; text-transform:uppercase; color:var(--dimmer);
+                          padding:2px 4px 4px; }
+        .ow-feat-header span { white-space:nowrap; }
+        .ow-feat-header span:nth-child(2),
+        .ow-feat-header span:nth-child(4) { text-align:right; }
+        .ow-feat-header span:nth-child(3) { padding-left:2px; }
+        .ow-feat-header.with-cheat span:nth-child(5) { text-align:right; }
+        .ow-cheat-pct { text-align:right; color:var(--dimmer); font-size:11px; }
+        .ow-cheat-pct.cp-mid  { color:var(--gold); font-weight:700; }
+        .ow-cheat-pct.cp-high { color:var(--loss); font-weight:700; }
+
+        .ow-feat { padding:3px 4px; border-radius: var(--radius-sm); align-items:center; font-size:12px; }
+        .ow-feat.row-warn  { background:rgba(240,180,41,.07); }
+        .ow-feat.row-alert { background:rgba(255,68,85,.09);  }
+        .ow-feat-label { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .ow-feat.row-warn  .ow-feat-label,
+        .ow-feat.row-alert .ow-feat-label { color:var(--text); }
+        /* Option 3: peer z-score badge on individual feature rows */
+        .ow-peer-z { font-size:9px; font-weight:700; margin-left:4px; vertical-align:middle; opacity:.85; }
+        .ow-peer-z.pz-warm { color:var(--gold); }
+        .ow-peer-z.pz-hot  { color:var(--loss); }
+        .ow-feat-val { text-align:right; color:var(--text); font-size:11px; }
+        .ow-bar-wrap { height:7px; background:rgba(255,255,255,.06); border-radius:var(--radius-pill); overflow:hidden; align-self:center; }
+        .ow-bar { height:100%; border-radius:var(--radius-pill); background:var(--win); }
+        .ow-bar.warn  { background:var(--gold); }
+        .ow-bar.alert { background:var(--loss); }
+        .ow-pct { text-align:right; color:var(--dimmer); font-size:11px; }
+        .ow-pct.warn  { color:var(--gold); font-weight:700; }
+        .ow-pct.alert { color:var(--loss); font-weight:700; }
+
+        /* Suspicious moments */
+        .ow-moments { margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
+        .ow-moments-title { font-size:9px; letter-spacing:2px; text-transform:uppercase;
+                            color:var(--dim); margin-bottom:6px; }
+        .ow-moment-list { display:flex; flex-direction:column; gap:3px; }
+        /* .ow-moment / .ir-toggle and friends: static/momentrow.css */
+
+        /* ── Highlights tab ── rows reuse .ow-moment + the clip/replay CSS
+           below; only the filter bar and the player/type columns are new. */
+        .hl-filters { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:10px 0 12px; }
+        .hl-chip { font-family:var(--font-ui); font-size:10px; letter-spacing:1px;
+                   padding:3px 9px; border:1px solid var(--border); border-radius: var(--radius-sm);
+                   background:transparent; color:var(--dim); cursor:pointer; }
+        .hl-chip:hover:not(:disabled) { color:var(--text); border-color:var(--dim); }
+        .hl-chip.active { color:var(--accent); border-color:var(--accent); background:rgba(0,194,255,.08); }
+        .hl-chip:disabled { opacity:.4; cursor:default; }
+        .hl-select { font-family:var(--font-ui); font-size:11px; padding:3px 6px;
+                     margin-left:6px; background:var(--panel); color:var(--text);
+                     border:1px solid var(--border); border-radius: var(--radius-sm); }
+        .hl-count { font-family:var(--font-mono); font-size:10px; color:var(--dimmer); margin-left:auto; }
+        /* .hl-item / .hl-type: static/momentrow.css */
+        /* .m-player team tinting: static/momentrow.css */
+        .hl-more { font-family:var(--font-ui); font-size:10px; color:var(--dim);
+                   background:none; border:1px solid var(--border); border-radius: var(--radius-sm);
+                   padding:4px 10px; margin-top:8px; cursor:pointer; }
+        .hl-more:hover { border-color:var(--accent); color:var(--text); }
+
+        /* Instant Replay + in-game clip boxes: static/momentrow.css.
+           Only the size the two boxes share is set here. */
+        .ow-media { --clip-w:360px; --clip-h:203px; }
+
+        .kill-log-wrap { display:flex; flex-direction:column; gap:2px; max-height:640px; overflow-y:auto; }
+        .kill-row { display:grid; grid-template-columns:72px 1fr 14px 1fr 85px 100px; gap:8px; align-items:center; padding:5px 12px; background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-sm); font-family:var(--font-narrow); font-size:12px; cursor:pointer; transition:background .1s, border-color .1s; }
+        .kill-row:hover { background:#131e2c; }
+        .kill-row.selected { border-color:var(--accent); background:rgba(0,194,255,.07); }
+        .kill-tick  { color:var(--dim); font-size:10px; }
+        .kill-name  { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .kill-name.ct { color:#7ab8ff; }
+        .kill-name.t  { color:#ffaa22; }
+        .kill-assist { color:var(--dim); font-size:10px; }
+        .kill-assist-ico { height:11px; width:auto; max-width:16px; object-fit:contain; vertical-align:middle; margin:0 1px; }
+        .kill-arrow { color:var(--dim); text-align:center; }
+        .kill-weapon { color:var(--dim); font-size:10px; text-align:right; display:flex; align-items:center; justify-content:flex-end; gap:5px; }
+        .kill-weapon-ico { height:16px; width:auto; max-width:26px; object-fit:contain; flex-shrink:0; vertical-align:middle; margin:0 1px; }
+        .kill-conditions { display:flex; align-items:center; justify-content:flex-end; gap:3px; flex-wrap:nowrap; }
+        .kill-cond-ico { height:14px; width:auto; max-width:22px; object-fit:contain; }
+        .kill-cond-tag { color:var(--dim); font-size:8px; letter-spacing:.5px; padding:1px 3px; border:1px solid var(--border); border-radius:var(--radius-xs); }
+
+        #loading-overlay { display:flex; align-items:center; justify-content:center; padding:80px 20px; font-size:15px; letter-spacing:4px; text-transform:uppercase; color:var(--dim); }
+    </style>
+{% endblock %}
+{% block content %}
+
+<div id="match-hero" class="hero" style="display:none">
+    <div class="hero-map">
+        <img class="hero-map-ico" id="hero-map-ico" alt="" style="display:none">
+        <div class="hero-map-name" id="hero-map">-</div>
+        <div class="hero-map-sub"  id="hero-mode">-</div>
+    </div>
+    <div class="hero-pills">
+        <div class="meta-pill" id="hero-winner" style="display:none"></div>
+        <div class="meta-pill" id="hero-rank" style="display:none"></div>
+        <div class="meta-pill" id="hero-rounds">-</div>
+        <div class="meta-pill" id="hero-kills">-</div>
+        <div class="meta-pill" id="hero-dmg">-</div>
+    </div>
+</div>
+
+<div class="tab-bar" id="tab-bar" style="display:none">
+    <button class="tab-btn active" data-tab="scoreboard">Scoreboard</button>
+    <button class="tab-btn" data-tab="combat">Combat &amp; Utility</button>
+    <button class="tab-btn" data-tab="rounds-kills">Rounds &amp; Kills</button>
+    <button class="tab-btn" data-tab="duels">Duels</button>
+    <button class="tab-btn" data-tab="heatmaps">Heatmaps</button>
+    <button class="tab-btn" data-tab="overwatch">Overwatch</button>
+    <button class="tab-btn" data-tab="highlights">Highlights</button>
+</div>
+
+<div id="loading-overlay">Loading match data…</div>
+
+<main id="main-content" style="display:none">
+    <div class="tab-panel active" id="tab-scoreboard">
+        <div class="section-title">Scoreboard · Core Stats</div>
+        <div id="sb-ct"></div><div id="sb-t"></div>
+    </div>
+    <div class="tab-panel" id="tab-combat">
+        <div class="section-title">Combat &amp; Utility</div>
+        <div id="combat-ct"></div><div id="combat-t"></div>
+    </div>
+    <div class="tab-panel" id="tab-rounds-kills">
+        <div class="section-title">Round History <span class="sec-hint">click a round to filter the kill log &amp; highlight it below</span></div>
+        <div class="round-history" id="round-history"></div>
+        <div class="section-title econ-title">Economy <span class="sec-hint">team equipment / cash / spent per round · CT above the line, T below</span></div>
+        <div class="econ-panel" id="econ-panel">
+            <div class="econ-row" data-metric="equip"><span class="econ-label">Equip</span><div class="econ-bars" id="econ-bars-equip"></div></div>
+            <div class="econ-row" data-metric="cash"><span class="econ-label">Cash</span><div class="econ-bars" id="econ-bars-cash"></div></div>
+            <div class="econ-row" data-metric="spent"><span class="econ-label">Spent</span><div class="econ-bars" id="econ-bars-spent"></div></div>
+        </div>
+        <div class="econ-empty" id="econ-empty" style="display:none">No economy data for this match - re-parse it with the current parser to add it.</div>
+        <div class="rk-layout">
+            <div class="rk-left">
+                <div class="section-title">Kill Log <span class="sec-count" id="kill-log-count"></span> <span class="sec-hint">click a frag to see the map situation</span></div>
+                <div class="kill-log-wrap" id="kill-log"></div>
+            </div>
+            <aside class="rk-map-panel">
+                <div class="section-title">Map Situation</div>
+                <canvas id="fragCanvas" width="1024" height="1024"></canvas>
+                <div class="frag-caption" id="frag-caption">Click a frag in the kill log to see the situation on the map.</div>
+                <a id="frag-replay-link" class="nav-link replay frag-replay" style="display:none" target="_blank">▶ Open in replay</a>
+                <button id="frag-demo-btn" class="nav-link replay frag-replay" style="display:none"
+                        title="Open the original demo in CS2 (no HLAE) - it jumps to this kill from the killer's point of view by itself; F8 in game jumps manually">🎮 Open in CS2</button>
+            </aside>
+        </div>
+    </div>
+    <div class="tab-panel" id="tab-duels">
+        <div class="section-title">Duels - Player vs Player <span class="sec-hint">row's win% of duels vs column · green = row wins this matchup more often, red = loses it more often · diagonal = self · blank = never met</span></div>
+        <div class="duels-wrap" id="duels-wrap"></div>
+    </div>
+    <div class="tab-panel" id="tab-heatmaps">
+        <div class="section-title">Heatmaps <span class="sec-hint">binned event density on the map · toggle layers, side, team &amp; round</span></div>
+        <div class="heat-layout">
+            <div class="heat-controls" id="heat-controls"></div>
+            <div class="heat-map-wrap">
+                <canvas id="heatCanvas" width="1024" height="1024"></canvas>
+                <div class="heat-empty" id="heat-empty">Select at least one layer to show density.</div>
+                <!-- A heatmap without a scale is a picture, not a measurement:
+                     one row per active layer saying what its darkest cell is
+                     worth (static/momentheat.js legendHtml). -->
+                <div class="heat-legend" id="heat-legend"></div>
+            </div>
+        </div>
+    </div>
+    <div class="tab-panel" id="tab-overwatch">
+        <div class="section-title">Overwatch - Trust Analysis
+            <span class="sec-hint">statistical indicators vs. rank-banded baselines · evidence for review, not a verdict</span>
+            <div class="ow-toolbar">
+                <button id="ow-pro-match-btn" class="ow-pro-match-btn" title="Mark this match as a professional match - all players excluded from baselines and suspicion flags suppressed">★ Pro Match</button>
+            </div>
+        </div>
+        <details class="ow-legend">
+            <summary>What am I looking at?</summary>
+            <div class="ow-legend-body">
+                Each card is one player. Every indicator (hover its name for what it measures)
+                is compared against other players at the same rank - never against everyone,
+                since a Global Elite and a Silver naturally look different on these stats.
+                Nothing here is a verdict: legit players hit outliers too, especially with few
+                matches analyzed.
+                <dl>
+                    <dt>Suspicion bar / percentile</dt>
+                    <dd>Where this value ranks against same-rank players (e.g. "97th" = higher/more suspicious
+                        than 97% of peers). Highlighted amber ≥95th, red ≥99th. Grey "n/a" means too few
+                        baseline samples exist yet to compare against.</dd>
+                    <dt>+X.Xσ*</dt>
+                    <dd>Peer z-score - how far above this <em>match's own</em> 10 players the value is,
+                        shown only when notably high. A same-match sanity check alongside the baseline comparison.</dd>
+                    <dt>vs Cheat%</dt>
+                    <dd>Percentile against a small reference pool of confirmed-cheater matches (only shown once
+                        that pool has enough samples). Higher = closer to how confirmed cheaters score.</dd>
+                    <dt>Z·2.9 / Zs·1.8</dt>
+                    <dd>Composite score combining every suspicious feature into one number. "Zs·" is the same
+                        score after down-weighting indicators backed by very few events this match toward the
+                        rank baseline - shown only when it meaningfully differs from "Z·", so you can spot
+                        scores resting on a thin sample.</dd>
+                    <dt>Hover an indicator</dt>
+                    <dd>Shows what it measures, this match's value, its 95% confidence interval (the plausible
+                        range given how few events back it - wide with few events, tight with many), and how
+                        many events that's based on.</dd>
+                    <dt>Pooled evidence</dt>
+                    <dd>On the <a href="/overwatch/dashboard">Overwatch dashboard</a>, a player flagged in ≥2
+                        matches gets this same value re-estimated from every one of their <em>other</em>
+                        analyzed matches - a tight interval over many matches is much stronger evidence than
+                        one match's outlier.</dd>
+                </dl>
+            </div>
+        </details>
+        <div id="ow-summary" class="ow-summary" style="display:none">
+            <div class="ow-summary-head">
+                <span class="ow-summary-title">All players</span>
+                <select id="ow-summary-feat" class="ow-summary-select"></select>
+            </div>
+            <div id="ow-summary-strip"></div>
+        </div>
+        <div id="ow-status" class="ow-status">Open this tab to run the analysis.</div>
+        <div id="ow-players"></div>
+        <div id="ow-note" class="ow-note"></div>
+    </div>
+
+    <div class="tab-panel" id="tab-highlights">
+        <div class="section-title">Highlights
+            <span class="sec-hint">every player's best moments this match, ranked: clutches → multi-kills → impact kills</span>
+        </div>
+        <div class="hl-filters" id="hl-filters" style="display:none">
+            <button type="button" class="hl-chip active" data-filter="all">All</button>
+            <button type="button" class="hl-chip" data-filter="clutch">Clutches</button>
+            <button type="button" class="hl-chip" data-filter="multikill">Multi-kills</button>
+            <button type="button" class="hl-chip" data-filter="impact_kill">Kills</button>
+            <select class="hl-select" id="hl-player"><option value="all">All players</option></select>
+            <span class="hl-count" id="hl-count"></span>
+        </div>
+        <div id="hl-status" class="ow-status">Open this tab to build the reel.</div>
+        <div id="hl-list" class="ow-moment-list"></div>
+        <button type="button" class="hl-more" id="hl-more" style="display:none"></button>
+    </div>
+</main>
+
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='chunks.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='chunks.js') }}"></script>
+<script src="{{ url_for('static', filename='fmt.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='maps.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='assets.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='assets.js') }}"></script>
+<script src="{{ url_for('static', filename='matchhero.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='matchhero.js') }}"></script>
+<script src="{{ url_for('static', filename='match2d.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='match2d.js') }}"></script>
+<script src="{{ url_for('static', filename='utilfx.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='utilfx.js') }}"></script>
+<script src="{{ url_for('static', filename='viewport.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='viewport.js') }}"></script>
+<script src="{{ url_for('static', filename='instantreplay.js') }}"></script>
+<script src="{{ url_for('static', filename='clipbox.js') }}"></script>
+<script src="{{ url_for('static', filename='demojump.js') }}"></script>
+<script src="{{ url_for('static', filename='momentheat.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='momentheat.js') }}"></script>
+<script src="{{ url_for('static', filename='momentrow.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='momentrow.js') }}"></script>
+<script>
+const matchFile = "{{ match_file }}";
+const TICKRATE  = Match2DLogic.TICKRATE;
+
+// Radar calibration - shared with viewer.js/multi.js (static/match2d.logic.js).
+const MAP_LIBRARY = Match2DLogic.MAP_LIBRARY;
+
+// ── Rounds & Kills tab state ──────────────────────────────────────────────────
+let MATCH           = null;   // full match_data.json
+let CHUNK_SOURCE    = null;   // ChunkSource (chunks.js) - v2 binary or JSON chunks
+let KILLS           = [];     // round-annotated kills from computeStats
+let ROUNDS_BY_NUM   = {};
+let STATS           = null;   // computeStats() output, kept for renderCombatUtility() re-renders
+let UTIL_RATING        = {};      // name -> {quantity, quality, combined} from /utility-rating (async)
+let UTIL_RATING_LOADED = false;   // becomes true once that fetch resolves (success or failure)
+let selectedRound   = null;   // round_num filter, null = all
+let selectedKillIdx = null;   // index into KILLS
+const chunkCache    = new Map();
+let mapImg = null, mapImgReady = false;
+let lastFrag = null;          // {players, kill} for redraw once the map image loads
+
+const REGULATION_HALF   = Match2DLogic.REGULATION_HALF;
+const REGULATION_ROUNDS = Match2DLogic.REGULATION_ROUNDS;
+const OT_HALF_LEN       = Match2DLogic.OT_HALF_LEN;
+
+// Returns true when first-half-CT team is on the T side for a given round number.
+const isSwappedAtRound = Match2DLogic.isSwappedAtRoundSimple;
+
+function fmtWeapon(w) {
+    if (!w) return '-';
+    return w.replace('weapon_','').replace(/_/g,' ').toUpperCase();
+}
+
+// Real equipment icon (static/assets/equipment/) for the Kill Log / frag
+// caption, when the VPK pipeline has been run - same §1 deletion-test gate as
+// the 2D viewer's loadout icons; falls back to nothing (text label carries it).
+function weaponIconTag(w) {
+    if (!w || !window.Assets || !Assets.available()) return '';
+    const url = Assets.url('equipment', w);
+    return url ? `<img class="kill-weapon-ico" src="${url}" alt="${fmtWeapon(w)}">` : '';
+}
+
+// Chainable kill-condition chips (deathnotice icons) + assist name - same
+// fields/order as static/killfeed.js's in-canvas feed (KillFeed.CONDITIONS),
+// so the Kill Log reads identically to the 2D replayer's feed. Additive
+// parser fields - kills from before this feature just render no chips.
+const KILL_CONDITIONS = [
+    ['headshot',       'headshot', 'HS'],
+    ['wallbang',       'wallbang', 'WB'],
+    ['noscope',        'noscope',  'NS'],
+    ['through_smoke',  'smoke',    'SMOKE'],
+    ['attacker_blind', 'blind',    'BLIND'],
+    ['attacker_air',   'air',      'AIR'],
+];
+function killConditionChips(k) {
+    const avail = window.Assets && Assets.available();
+    return KILL_CONDITIONS.filter(([field]) => k[field]).map(([field, dnKey, tag]) => {
+        const url = avail ? Assets.url('deathnotice', dnKey) : null;
+        return url ? `<img class="kill-cond-ico" src="${url}" alt="${tag}" title="${tag}">`
+                    : `<span class="kill-cond-tag" title="${tag}">${tag}</span>`;
+    }).join('');
+}
+function killAssistHtml(k) {
+    if (!k.assister_name) return '';
+    let icon = '';
+    if (k.assist_flash && window.Assets && Assets.available()) {
+        const url = Assets.url('equipment', 'flashbang_assist');
+        if (url) icon = `<img class="kill-assist-ico" src="${url}" alt="flash assist" title="flash assist">`;
+    }
+    return ` <span class="kill-assist">+ ${icon}${k.assister_name}</span>`;
+}
+function killSuicideIcon() {
+    const url = (window.Assets && Assets.available()) ? Assets.url('deathnotice', 'suicide') : null;
+    return url ? `<img class="kill-cond-ico" src="${url}" alt="suicide" title="suicide">`
+                : `<span class="kill-cond-tag" title="suicide">SUI</span>`;
+}
+
+// ── Stats computation ─────────────────────────────────────────────────────────
+
+function computeStats(data) {
+    const rounds   = data.rounds   || [];
+    const kills    = (data.kills   || []).map(k => {
+        if (k.round_num != null) return k;
+        for (let i = 0; i < rounds.length; i++) {
+            const r = rounds[i], rEnd = r.end ?? rounds[i+1]?.start ?? Infinity;
+            if (k.tick >= (r.start ?? 0) && k.tick <= rEnd) return {...k, round_num: r.round_num};
+        }
+        return k;
+    });
+    const damage   = data.damage   || [];
+    const blind    = data.blind    || [];
+    const numRounds = Math.max(rounds.length, 1);
+
+    const P = {};
+    const ensure = (name, side) => {
+        if (!name) return;
+        if (!P[name]) P[name] = {
+            name, side: side || '',
+            kills:0, deaths:0, assists:0, hs:0,
+            kastRounds: new Set(),
+            totalDmg:0, utilDmg:0,
+            flashAssists:0, effectiveFlashes:0, blindTimeSec:0,
+            teamFlashes:0, teamBlindSec:0,
+            firstKills:0, firstDeaths:0,
+            trades:0,
+            mkRounds: {},
+            clutchRounds: new Set(),
+            weapons: {},
+        };
+        if (side && !P[name].side) P[name].side = side;
+    };
+
+    // Group kills by round
+    const killsByRound = {};
+    kills.forEach(k => {
+        const r = k.round_num ?? -1;
+        if (!killsByRound[r]) killsByRound[r] = [];
+        killsByRound[r].push(k);
+    });
+
+    // Main kills pass
+    kills.forEach(k => {
+        if (k.attacker_name && k.attacker_name !== k.victim_name) {
+            ensure(k.attacker_name, k.attacker_side);
+            P[k.attacker_name].kills++;
+            if (k.headshot) P[k.attacker_name].hs++;
+            if (k.weapon) P[k.attacker_name].weapons[k.weapon] = (P[k.attacker_name].weapons[k.weapon]||0)+1;
+            if (k.round_num != null) {
+                P[k.attacker_name].kastRounds.add(k.round_num);
+                const mk = P[k.attacker_name].mkRounds;
+                mk[k.round_num] = (mk[k.round_num]||0)+1;
+            }
+        }
+        if (k.victim_name) {
+            ensure(k.victim_name, k.victim_side);
+            P[k.victim_name].deaths++;
+        }
+        if (k.assister_name && k.assister_name !== k.victim_name) {
+            ensure(k.assister_name, null);
+            P[k.assister_name].assists++;
+            if (k.round_num != null) P[k.assister_name].kastRounds.add(k.round_num);
+        }
+    });
+
+    // First kills/deaths
+    Object.values(killsByRound).forEach(rKills => {
+        if (!rKills.length) return;
+        const first = [...rKills].sort((a,b)=>(a.tick||0)-(b.tick||0))[0];
+        if (first.attacker_name && first.attacker_name !== first.victim_name) {
+            ensure(first.attacker_name, first.attacker_side);
+            P[first.attacker_name].firstKills++;
+        }
+        if (first.victim_name) {
+            ensure(first.victim_name, first.victim_side);
+            P[first.victim_name].firstDeaths++;
+        }
+    });
+
+    // Trade detection: player A kills B, then A is killed within TRADE_WINDOW by B's team
+    const TRADE_WINDOW = 640;
+    kills.forEach((death, di) => {
+        if (!death.victim_name) return;
+        const dSide = (death.victim_side||'').toLowerCase();
+        const aTick = death.tick || 0;
+        for (let j = di+1; j < kills.length; j++) {
+            const k2 = kills[j];
+            if ((k2.tick||0) > aTick + TRADE_WINDOW) break;
+            if (k2.victim_name === death.attacker_name) {
+                const k2aSide = (k2.attacker_side||'').toLowerCase();
+                const sameTeam = dSide && k2aSide && (
+                    (dSide === 'ct' && k2aSide === 'ct') ||
+                    ((dSide === 't' || dSide === 'terrorist') && (k2aSide === 't' || k2aSide === 'terrorist'))
+                );
+                if (sameTeam || (!dSide && !k2aSide)) {
+                    ensure(k2.attacker_name, k2.attacker_side);
+                    if (k2.attacker_name) P[k2.attacker_name].trades++;
+                }
+                break;
+            }
+        }
+    });
+
+    // KAST survived rounds
+    rounds.forEach(r => {
+        const rNum = r.round_num ?? r.round ?? -1;
+        const deadThisRound = new Set();
+        (killsByRound[rNum]||[]).forEach(k => { if (k.victim_name) deadThisRound.add(k.victim_name); });
+        Object.keys(P).forEach(name => {
+            if (!deadThisRound.has(name)) P[name].kastRounds.add(rNum);
+        });
+    });
+
+    // Damage - clamped to the victim's remaining health per life (see
+    // MatchHeroLogic.forEachClampedHit, shared with the viewer / multi-round
+    // analyser hero band so all three pages replay overkill hits identically).
+    const UTIL_WEAPONS = new Set(['inferno','molotov','hegrenade','flashbang','smokegrenade','decoy']);
+    MatchHeroLogic.forEachClampedHit(damage, (d, actual) => {
+        ensure(d.attacker_name, d.attacker_side);
+        P[d.attacker_name].totalDmg += actual;
+        const wep = (d.weapon||'').replace('weapon_','').toLowerCase();
+        if (UTIL_WEAPONS.has(wep)) P[d.attacker_name].utilDmg += actual;
+    });
+
+    // Flash blinds
+    blind.forEach(b => {
+        if (!b.attacker_name) return;
+        ensure(b.attacker_name, b.attacker_side);
+        const dur = b.blind_duration || 0;
+        const aS = (b.attacker_side||'').toLowerCase();
+        const vS = (b.victim_side||b.user_side||'').toLowerCase();
+        const isEnemy = (aS==='ct' && (vS==='t'||vS==='terrorist'))
+                     || ((aS==='t'||aS==='terrorist') && vS==='ct');
+        const isTeammate = b.victim_name !== b.attacker_name && (
+            (aS==='ct' && vS==='ct') ||
+            ((aS==='t'||aS==='terrorist') && (vS==='t'||vS==='terrorist')));
+        if (isEnemy) {
+            P[b.attacker_name].blindTimeSec += dur;
+            if (dur >= 2.0) P[b.attacker_name].effectiveFlashes++;
+        } else if (isTeammate) {
+            P[b.attacker_name].teamBlindSec += dur;
+            if (dur >= 2.0) P[b.attacker_name].teamFlashes++;
+        }
+    });
+
+    // Flash assists: enemy blinded and then killed within blind window by a teammate
+    blind.forEach(b => {
+        if (!b.attacker_name || (b.blind_duration||0) < 0.5) return;
+        ensure(b.attacker_name, b.attacker_side);
+        const aS = (b.attacker_side||'').toLowerCase();
+        const vS = (b.victim_side||'').toLowerCase();
+        const isEnemy = (aS==='ct' && (vS==='t'||vS==='terrorist'))
+                     || ((aS==='t'||aS==='terrorist') && vS==='ct');
+        if (!isEnemy) return;
+        const killWindow = Math.round((b.blind_duration||0) * TICKRATE) + 32;
+        const killed = kills.find(k =>
+            k.victim_name === b.victim_name &&
+            Math.abs((k.tick||0)-(b.tick||0)) <= killWindow
+        );
+        if (killed && killed.attacker_name !== b.attacker_name) {
+            P[b.attacker_name].flashAssists++;
+        }
+    });
+
+    // 1vX clutch detection - only counts when the lone player's team wins the round
+    const roundWinnerByNum = {};
+    rounds.forEach(r => {
+        const w = (r.winner_side||r.winner||'').toLowerCase();
+        roundWinnerByNum[r.round_num ?? -1] = w==='ct' ? 'ct' : (w==='t'||w==='terrorist') ? 't' : '';
+    });
+    Object.entries(killsByRound).forEach(([rNum, rKills]) => {
+        const sorted = [...rKills].sort((a,b)=>(a.tick||0)-(b.tick||0));
+        const aliveCT = new Set(), aliveT = new Set();
+        sorted.forEach(k => {
+            if (k.attacker_name) { const s=(k.attacker_side||'').toLowerCase(); if(s==='ct') aliveCT.add(k.attacker_name); else aliveT.add(k.attacker_name); }
+            if (k.victim_name)   { const s=(k.victim_side||'').toLowerCase();   if(s==='ct') aliveCT.add(k.victim_name);   else aliveT.add(k.victim_name); }
+        });
+        const deadCT = new Set(), deadT = new Set();
+        sorted.forEach(k => {
+            if (!k.victim_name) return;
+            const vS = (k.victim_side||'').toLowerCase();
+            if (vS==='ct') deadCT.add(k.victim_name); else deadT.add(k.victim_name);
+            const liveCT = [...aliveCT].filter(p=>!deadCT.has(p));
+            const liveT  = [...aliveT].filter(p=>!deadT.has(p));
+            const winner = roundWinnerByNum[+rNum] || '';
+            if (liveCT.length===1 && liveT.length>=1 && winner==='ct') { ensure(liveCT[0],'ct'); P[liveCT[0]].clutchRounds.add(+rNum); }
+            if (liveT.length===1  && liveCT.length>=1 && winner==='t') { ensure(liveT[0],'terrorist'); P[liveT[0]].clutchRounds.add(+rNum); }
+        });
+    });
+
+    // Finalise
+    Object.values(P).forEach(p => {
+        p.kd       = p.deaths ? +(p.kills/p.deaths).toFixed(2) : +p.kills.toFixed(2);
+        p.kast     = numRounds>0 ? +((p.kastRounds.size/numRounds)*100).toFixed(1) : 0;
+        p.adr      = numRounds>0 ? +(p.totalDmg/numRounds).toFixed(1) : 0;
+        p.hsPct    = p.kills>0   ? +((p.hs/p.kills)*100).toFixed(1) : 0;
+        p.utilDmgR = numRounds>0 ? +(p.utilDmg/numRounds).toFixed(1) : 0;
+        p.blindTimeR     = +p.blindTimeSec.toFixed(1);
+        p.teamBlindTimeR = +p.teamBlindSec.toFixed(1);
+        const mkC = {2:0,3:0,4:0,5:0};
+        Object.values(p.mkRounds).forEach(c=>{ if(c>=2) mkC[Math.min(c,5)]++; });
+        p.mk2=mkC[2]; p.mk3=mkC[3]; p.mk4=mkC[4]; p.mk5=mkC[5];
+        p.clutches = p.clutchRounds.size;
+        // Rating 2.0 approximation - coefficients from the public regression
+        // fit against real HLTV ratings (github.com/mxswd/hltv-rating /
+        // dave.tf reverse-engineering writeup): 0.0073*KAST + 0.3591*KPR -
+        // 0.5329*DPR + 0.2372*Impact + 0.0032*ADR + 0.1587, KAST as 0-100 and
+        // Impact ~= 2.13*KPR + 0.42*APR - 0.41. Still an approximation (HLTV
+        // uses separate CT/T-side formulas + more granular internal data), but
+        // matches real Rating 2.0 far closer than the earlier ad hoc formula.
+        const kpr = p.kills/numRounds;
+        const dpr = p.deaths/numRounds;
+        const apr = p.assists/numRounds;
+        const impact = 2.13*kpr + 0.42*apr - 0.41;
+        p.rating = +Math.max(0.01, 0.0073*p.kast + 0.3591*kpr - 0.5329*dpr + 0.2372*impact + 0.0032*p.adr + 0.1587).toFixed(2);
+    });
+
+    // Split into fixed team identity (Team 1 = first-half CT, Team 2 =
+    // first-half T), via the SAME teamIdOf()/ensureSideMap() helper the Duels
+    // matrix and Heatmaps tab already use - not by each player's ad hoc
+    // first-seen `p.side`, which used to group these two panels by whichever
+    // side happened to be recorded first for a name in the raw event arrays
+    // (order-dependent, and inconsistent with the fixed-identity ctWins/tWins
+    // totals computed two lines below). A player teamIdOf() can't place
+    // (no kill/damage event at all - e.g. shots/blind only) falls back to
+    // their last-known `p.side` so no one silently vanishes from both panels.
+    const team1=[], team2=[], unk=[];
+    Object.values(P).forEach(p => {
+        const tid = teamIdOf(p.name);
+        if (tid === 1) team1.push(p);
+        else if (tid === 2) team2.push(p);
+        else unk.push(p);
+    });
+    unk.forEach(p => {
+        const s=(p.side||'').toLowerCase();
+        (s==='t'||s==='terrorist' ? team2 : team1).push(p);
+    });
+    team1.sort((a,b)=>b.rating-a.rating);
+    team2.sort((a,b)=>b.rating-a.rating);
+
+    // Per-team score: handles regulation halftime + all OT half swaps.
+    let teamCT=0, teamCT_ct=0, teamCT_t=0;
+    let teamT=0,  teamT_ct=0,  teamT_t=0;
+    rounds.forEach(r=>{
+        const rNum = r.round_num ?? 0;
+        const w = (r.winner_side||r.winner||'').toLowerCase();
+        if (!isSwappedAtRound(rNum)) {
+            if (w==='ct')                      { teamCT++; teamCT_ct++; }
+            else if (w==='t'||w==='terrorist') { teamT++;  teamT_t++;  }
+        } else {
+            if (w==='t'||w==='terrorist')      { teamCT++; teamCT_t++; }
+            else if (w==='ct')                 { teamT++;  teamT_ct++; }
+        }
+    });
+    const winner = teamCT > teamT ? 'ct' : teamT > teamCT ? 't' : 'draw';
+
+    return {team1, team2,
+        ctWins: teamCT, ctCtSide: teamCT_ct, ctTSide: teamCT_t,
+        tWins:  teamT,  tCtSide:  teamT_ct,  tTSide:  teamT_t,
+        winner, rounds, kills, numRounds};
+}
+
+// ── Render helpers ────────────────────────────────────────────────────────────
+
+function ratingClass(r) { return r>=1.4?'elite':r>=1.1?'good':r>=0.9?'ok':'bad'; }
+
+function rankBadge(i) {
+    const cls = i===0?'gold':i===1?'silver':i===2?'bronze':'';
+    return `<span class="rank-num ${cls}">${i+1}</span>`;
+}
+
+// ── Competitive ranks (from parser's `ranks` array) ──────────────────────────
+let RANKS_BY_NAME = {};
+
+// ── Steam profile links (§5.3) - name → SteamID from the parser's `ranks` array
+// (the only place SteamIDs live in the master JSON). Falls back to a plain name
+// when the id is absent (old data). Same outbound link the Overwatch tab uses.
+let STEAM_BY_NAME = {};
+function steamName(name) {
+    const safe = name || '-';
+    const sid = STEAM_BY_NAME[(name||'').toLowerCase()];
+    if (!sid) return safe;
+    return `<a class="steam-link" href="https://steamcommunity.com/profiles/${sid}" target="_blank" rel="noopener" title="Steam profile">${safe}</a>`;
+}
+
+// Shared with the viewer / multi-round analyser hero band - static/matchhero.logic.js.
+const CS_SKILL_GROUPS = MatchHeroLogic.CS_SKILL_GROUPS;
+
+// Returns {label, full, tier} or null when there's no usable rank.
+function formatRank(r) {
+    if (!r) return null;
+    if (r.rank_type === 11) {                       // Premier - CS Rating number
+        if (!r.rank) return null;
+        const n = FmtLogic.rating(r.rank);
+        return { label: n, full: 'Premier · ' + n, tier: MatchHeroLogic.premierTier(r.rank) };
+    }
+    if (r.rank_type === 12 || r.rank_type === 7) {  // Competitive / Wingman skill group
+        if (!r.rank) return null;
+        const name = CS_SKILL_GROUPS[r.rank] || ('Rank ' + r.rank);
+        return { label: name, full: (r.rank_type === 7 ? 'Wingman · ' : 'Competitive · ') + name, tier: 'sg' };
+    }
+    return null;
+}
+
+function rankChip(name) {
+    const r = RANKS_BY_NAME[(name||'').toLowerCase()];
+    const f = formatRank(r);
+    if (!f) return '';
+    // Real CS2 skill-group icon when static/assets/ is present (Competitive /
+    // Wingman only - Premier is a rating number, so rankIconUrl returns null and
+    // the numeric chip below stays). Falls back to the CSS chip when absent.
+    const ico = (window.Assets && Assets.rankIconUrl) ? Assets.rankIconUrl(r) : null;
+    if (ico) return ` <img class="rank-ico rank-inline" src="${ico}" alt="${f.label}" title="${f.full}">`;
+    return ` <span class="rank-chip rank-inline ${f.tier}" title="${f.full}">${f.label}</span>`;
+}
+
+function mkHtml(p) {
+    let h='<div class="mk-row">';
+    if(p.mk2) h+=`<span class="mk-badge mk-2">2K×${p.mk2}</span>`;
+    if(p.mk3) h+=`<span class="mk-badge mk-3">3K×${p.mk3}</span>`;
+    if(p.mk4) h+=`<span class="mk-badge mk-4">4K×${p.mk4}</span>`;
+    if(p.mk5) h+=`<span class="mk-badge mk-5">ACE×${p.mk5}</span>`;
+    if(!p.mk2&&!p.mk3&&!p.mk4&&!p.mk5) h+='<span class="c-dim">-</span>';
+    h+='</div>';
+    return h;
+}
+
+function renderTeamBlock(players, teamId, w, colsFn) {
+    // Fixed team identity, not current side - the panel keeps the same
+    // title/colour across the halftime swap. The "CT n / T n" breakdown in
+    // the footer below still names sides on purpose: it's answering "how
+    // many of this team's wins were on which side", not "who is this team".
+    const sc = teamId===1?'team1':'team2';
+    const label = teamId===1?'Team 1':'Team 2';
+    const {head, row} = colsFn();
+    const rows = players.map((p,i)=>row(p,i)).join('');
+    const resultLbl = w.result==='win'?'WIN':w.result==='loss'?'LOSS':'DRAW';
+    return `<div class="team-block">
+        <div class="team-header">
+            <span class="team-name ${sc}">${label}</span>
+        </div>
+        <div class="tbl-scroll"><table class="stats-table">
+            <thead><tr>${head}</tr></thead>
+            <tbody>${rows}</tbody>
+            <tfoot><tr class="team-tfoot"><td colspan="99">
+                <span class="tfoot-total">${w.total}</span> rounds won
+                <span class="tfoot-sep">·</span>
+                <span class="tfoot-side ct">CT</span> ${w.ctSide}
+                <span class="tfoot-sep">·</span>
+                <span class="tfoot-side t">T</span> ${w.tSide}
+                <span class="result-badge ${w.result}">${resultLbl}</span>
+            </td></tr></tfoot>
+        </table></div>
+    </div>`;
+}
+
+function th(label, hint='', extra='') { return `<th ${extra}>${label}${hint?`<span class="th-hint">${hint}</span>`:''}  </th>`; }
+
+// Scoreboard columns
+function sbCols() {
+    return {
+        head: th('#')+th('Player')+th('Rank')+th('K/D/A')+th('K/D','ratio')+th('ADR','avg dmg/round')+th('HS%','headshots')+th('KAST','k/a/s/t %')+th('Rating','est. HLTV 2.0'),
+        row: (p,i) => {
+            const kdC = p.kd>=1?'c-green':'c-red';
+            const rc = rankChip(p.name);
+            return `<tr>
+                <td>${rankBadge(i)}</td>
+                <td>${steamName(p.name)}</td>
+                <td>${rc || '<span class="c-dim">-</span>'}</td>
+                <td><span class="kda"><span class="k">${p.kills}</span><span class="sep">/</span><span class="d">${p.deaths}</span><span class="sep">/</span><span class="a">${p.assists}</span></span></td>
+                <td class="${kdC}">${p.kd}</td>
+                <td class="${p.adr>=80?'c-gold':p.adr>=60?'':'c-dim'}">${p.adr}</td>
+                <td class="${p.hsPct>=60?'c-gold':p.hsPct>=40?'':'c-dim'}">${p.hsPct}%</td>
+                <td class="${p.kast>=70?'c-green':p.kast>=50?'':'c-red'}">${p.kast}%</td>
+                <td><span class="rating-badge ${ratingClass(p.rating)}">${p.rating}</span></td>
+            </tr>`;
+        }
+    };
+}
+
+// Quantity/Quality/Combined utility score, fetched async from
+// /utility-rating (see loadUtilityRating()) - "…" until it resolves, "–"
+// if the server had nothing to report (e.g. no baseline yet).
+function utilRatingCell(name, field) {
+    if (!UTIL_RATING_LOADED) return '<span class="c-dim">…</span>';
+    const v = UTIL_RATING[name] ? UTIL_RATING[name][field] : null;
+    return (v == null) ? '<span class="c-dim">–</span>' : v;
+}
+
+// Re-render just the Combat & Utility team blocks - called once at initial
+// paint (Util Rating columns show "…") and again once /utility-rating
+// resolves (real numbers patched in place), since that fetch runs in
+// parallel with /data/ rather than blocking first paint.
+function renderCombatUtility() {
+    if (!STATS) return;
+    const ctW = {total: STATS.ctWins, ctSide: STATS.ctCtSide, tSide: STATS.ctTSide, result: STATS.winner==='ct'?'win':STATS.winner==='draw'?'draw':'loss'};
+    const tW  = {total: STATS.tWins,  ctSide: STATS.tCtSide,  tSide: STATS.tTSide,  result: STATS.winner==='t'?'win':STATS.winner==='draw'?'draw':'loss'};
+    document.getElementById('combat-ct').innerHTML = renderTeamBlock(STATS.team1,1,ctW,combatUtilityCols);
+    document.getElementById('combat-t').innerHTML  = renderTeamBlock(STATS.team2,2,tW,combatUtilityCols);
+}
+
+// Fetched in parallel with /data/ (no dependency between them) - populates
+// UTIL_RATING and patches the Combat & Utility columns once it resolves.
+function loadUtilityRating() {
+    fetch('/utility-rating?match=' + encodeURIComponent(matchFile))
+        .then(r => r.json())
+        .then(d => {
+            UTIL_RATING = {};
+            if (d.ok) (d.players || []).forEach(p => { UTIL_RATING[p.name] = p; });
+        })
+        .catch(e => console.error('utility-rating fetch failed', e))
+        .finally(() => { UTIL_RATING_LOADED = true; renderCombatUtility(); });
+}
+loadUtilityRating();
+
+// Combined Combat + Utility columns
+function combatUtilityCols() {
+    return {
+        head: th('#')+th('Player')+th('ADR','avg dmg/round')+th('HS%','headshots')+th('FK','first kills')+th('FD','first deaths')+th('Trades','traded deaths')+th('1vX','clutches won')+th('Multikills')+th('Flashes','eff. on enemy','title="effective (≥2s) flashes on an enemy"')+th('FA','flash assists')+th('Blind','enemy blind sec')+th('TF','TM flashed','title="teammates flashed ≥2s"')+th('TF Blind','TM blind sec','title="teammate blind sec"')+th('Util Dmg','grenade dmg')+th('Nade Qty','nades/round','title="nades/round, excluding decoy"')+th('Nade Qual','vs peers','title="vs rank-banded peers"')+th('Util Rating','qty × qual','title="geometric mean of quantity & quality"'),
+        row: (p,i) => `<tr>
+            <td>${rankBadge(i)}</td>
+            <td>${steamName(p.name)}</td>
+            <td class="${p.adr>=80?'c-gold':''}">${p.adr}</td>
+            <td class="${p.hsPct>=60?'c-gold':''}">${p.hsPct}%</td>
+            <td class="${p.firstKills>0?'c-green':'c-dim'}">${p.firstKills}</td>
+            <td class="${p.firstDeaths>0?'c-red':'c-dim'}">${p.firstDeaths}</td>
+            <td class="${p.trades>0?'c-blue':'c-dim'}">${p.trades}</td>
+            <td class="${p.clutches>0?'c-gold':'c-dim'}">${p.clutches}</td>
+            <td>${mkHtml(p)}</td>
+            <td class="${p.effectiveFlashes>0?'c-blue':'c-dim'}">${p.effectiveFlashes}</td>
+            <td class="${p.flashAssists>0?'c-gold':'c-dim'}">${p.flashAssists}</td>
+            <td class="${p.blindTimeSec>5?'c-orange':p.blindTimeSec>0?'':'c-dim'}">${p.blindTimeR}s</td>
+            <td class="${p.teamFlashes>0?'c-red':'c-dim'}">${p.teamFlashes}</td>
+            <td class="${p.teamBlindSec>5?'c-red':p.teamBlindSec>0?'':'c-dim'}">${p.teamBlindTimeR}s</td>
+            <td class="${p.utilDmg>0?'c-orange':'c-dim'}">${p.utilDmg}</td>
+            <td>${utilRatingCell(p.name, 'quantity')}</td>
+            <td>${utilRatingCell(p.name, 'quality')}</td>
+            <td>${utilRatingCell(p.name, 'combined')}</td>
+        </tr>`
+    };
+}
+
+// Win-condition icon/label for a round's `reason` field - see
+// Match2DLogic.roundReasonIcon/Label (static/match2d.logic.js) for the mapping
+// rationale, shared with the 2D replayer and multi.js. Assets.load() is
+// already awaited before this module's data is rendered (see the fetch chain
+// below), so Assets.available() is accurate by the time renderRounds() runs.
+function roundReasonIcon(reason)  { return Match2DLogic.roundReasonIcon(reason, window.Assets); }
+function roundReasonLabel(reason) { return Match2DLogic.roundReasonLabel(reason); }
+
+function renderRounds(rounds) {
+    let h=`<div class="round-pill clickable all-pill" data-round="">ALL</div>`;
+    rounds.forEach((r,i)=>{
+        const rn = r.round_num ?? (i + 1);
+        const isHalfBoundary =
+            rn === REGULATION_HALF + 1 ||
+            (rn > REGULATION_ROUNDS && (rn - REGULATION_ROUNDS - 1) % OT_HALF_LEN === 0);
+        if (isHalfBoundary) h += '<div class="round-divider"></div>';
+        const rNum=(r.round_num??i+1);
+        const w=(r.winner_side||r.winner||'').toLowerCase();
+        const isCT=w==='ct', isT=w==='t'||w==='terrorist';
+        const siteRaw=(r.bomb_site||r.bomb_plant_site||'').toLowerCase();
+        const site=siteRaw.includes('_a')?'A':siteRaw.includes('_b')?'B':'';
+        const sideLetter = isCT?'C':isT?'T':'';
+        const reasonIcon = roundReasonIcon(r.reason);
+        const reasonTxt  = roundReasonLabel(r.reason) || (r.reason||'').toUpperCase().replace(/_/g,' ');
+        const wc = isCT?'var(--ct)':isT?'var(--t)':'transparent';
+        const title = `Round ${rNum} - ${w?w.toUpperCase():'?'} win${site?' · site '+site:''}${reasonTxt?' · '+reasonTxt:''}`;
+        h+=`<div class="round-pill clickable" style="--wc:${wc}" data-round="${rNum}" title="${title}">
+            <span class="rnum">${rNum}</span>
+            ${sideLetter ? `<span class="rside ${isCT?'ct':'t'}">${sideLetter}</span>` : ''}
+            ${reasonIcon ? `<span class="rreason">${reasonIcon}</span>` : ''}
+        </div>`;
+    });
+    document.getElementById('round-history').innerHTML=h;
+    updateRoundPills();
+}
+
+function updateRoundPills() {
+    document.querySelectorAll('#round-history .round-pill').forEach(p=>{
+        const r = p.dataset.round;
+        p.classList.toggle('active', selectedRound==null ? r==='' : +r===selectedRound);
+    });
+    updateEconHighlight();
+}
+
+document.getElementById('round-history').addEventListener('click', e=>{
+    const pill = e.target.closest('.round-pill[data-round]');
+    if (!pill) return;
+    const r = pill.dataset.round;
+    selectedRound = (r==='' || +r===selectedRound) ? null : +r;
+    updateRoundPills();
+    renderKills(KILLS);
+});
+
+// ── Economy - team equipment/cash/spent per round, small multiples (§ user
+// request 2026-07-18). Data comes from round.economy (cmd/parser/main.go,
+// captured at RoundFreezetimeEnd) - absent on matches parsed before that field
+// existed, so this degrades to an empty-state rather than assuming it's there.
+const ECON_METRICS = [
+    { key:'equip', label:'Equip', ct:'ct_equip', t:'t_equip' },
+    { key:'cash',  label:'Cash',  ct:'ct_cash',  t:'t_cash'  },
+    { key:'spent', label:'Spent', ct:'ct_spent', t:'t_spent' },
+];
+const ECON_BAR_MAX = 28;   // px - each row's own baseline-to-tip cap (own y-scale per metric)
+const fmtMoney = FmtLogic.money;
+
+function renderEconomy(rounds) {
+    const panel = document.getElementById('econ-panel');
+    const empty = document.getElementById('econ-empty');
+    const any = rounds.some(r => r.economy);
+    panel.style.display = any ? '' : 'none';
+    empty.style.display = any ? 'none' : '';
+    if (!any) return;
+
+    ECON_METRICS.forEach(m => {
+        let max = 1;
+        rounds.forEach(r => { if (r.economy) max = Math.max(max, r.economy[m.ct]||0, r.economy[m.t]||0); });
+        const host = document.getElementById('econ-bars-'+m.key);
+        host.innerHTML = rounds.map((r,i) => {
+            const rn = r.round_num ?? (i+1);
+            if (!r.economy) return `<div class="econ-col empty" data-round="${rn}" title="Round ${rn} - no economy data"><div class="baseline"></div></div>`;
+            const ct = r.economy[m.ct]||0, t = r.economy[m.t]||0;
+            const ctH = Math.max(1, Math.round(ct/max*ECON_BAR_MAX));
+            const tH  = Math.max(1, Math.round(t/max*ECON_BAR_MAX));
+            const title = `Round ${rn} - ${m.label}: CT ${fmtMoney(ct)} · T ${fmtMoney(t)}`;
+            return `<div class="econ-col" data-round="${rn}" title="${title}">
+                <div class="ct-bar" style="height:${ctH}px"></div>
+                <div class="baseline"></div>
+                <div class="t-bar" style="height:${tH}px"></div>
+            </div>`;
+        }).join('');
+    });
+    updateEconHighlight();
+}
+
+function updateEconHighlight() {
+    document.querySelectorAll('.econ-col').forEach(c => {
+        c.classList.toggle('highlight', selectedRound != null && +c.dataset.round === selectedRound);
+    });
+}
+
+document.getElementById('econ-panel').addEventListener('click', e => {
+    const col = e.target.closest('.econ-col[data-round]');
+    if (!col) return;
+    const rn = +col.dataset.round;
+    selectedRound = (selectedRound === rn) ? null : rn;
+    updateRoundPills();
+    renderKills(KILLS);
+});
+
+// In-round clock label for a kill: seconds since the round went live.
+function fmtRoundTime(k) {
+    const r = ROUNDS_BY_NUM[k.round_num];
+    if (!r) return 'T'+(k.tick??'-');
+    const base = r.freeze_end ?? r.start ?? 0;
+    const secs = Math.max(0, Math.round(((k.tick||0) - base) / TICKRATE));
+    return Math.floor(secs/60)+':'+String(secs%60).padStart(2,'0');
+}
+
+function renderKills(kills) {
+    KILLS = kills;
+    let list = kills.map((k,i)=>({k,i}));
+    if (selectedRound!=null) list = list.filter(e=>e.k.round_num===selectedRound);
+    else list = list.slice(0,300);
+
+    document.getElementById('kill-log-count').textContent =
+        selectedRound!=null ? `· Round ${selectedRound} · ${list.length} frags` : `· ${kills.length} frags`;
+
+    document.getElementById('kill-log').innerHTML = list.map(({k,i})=>{
+        const aS=(k.attacker_side||'').toLowerCase();
+        if (k.suicide) {
+            return `<div class="kill-row ${i===selectedKillIdx?'selected':''}" data-idx="${i}">
+                <span class="kill-tick">R${k.round_num??'-'} ${fmtRoundTime(k)}</span>
+                <span class="kill-name">${killSuicideIcon()}</span>
+                <span class="kill-arrow"></span>
+                <span class="kill-name">${k.victim_name||'-'}</span>
+                <span class="kill-weapon"></span>
+                <span class="kill-conditions"></span>
+            </div>`;
+        }
+        return `<div class="kill-row ${i===selectedKillIdx?'selected':''}" data-idx="${i}">
+            <span class="kill-tick">R${k.round_num??'-'} ${fmtRoundTime(k)}</span>
+            <span class="kill-name ${aS==='ct'?'ct':'t'}">${k.attacker_name||'-'}${killAssistHtml(k)}</span>
+            <span class="kill-arrow">›</span>
+            <span class="kill-name">${k.victim_name||'-'}</span>
+            <span class="kill-weapon">${weaponIconTag(k.weapon)}${fmtWeapon(k.weapon)}</span>
+            <span class="kill-conditions">${killConditionChips(k)}</span>
+        </div>`;
+    }).join('');
+}
+
+document.getElementById('kill-log').addEventListener('click', e=>{
+    const row = e.target.closest('.kill-row[data-idx]');
+    if (row) showFrag(+row.dataset.idx);
+});
+
+// ── Frag map snapshot ─────────────────────────────────────────────────────────
+
+const fragCanvas = document.getElementById('fragCanvas');
+const fctx       = fragCanvas.getContext('2d');
+
+function w2c(cfg, wx, wy) { return Match2DLogic.worldToCanvas(cfg, wx, wy); }
+
+function fragCaption(k) {
+    const aS=(k.attacker_side||'').toLowerCase()==='ct'?'ct':'t';
+    const vS=(k.victim_side||'').toLowerCase()==='ct'?'ct':'t';
+    const hs=k.headshot?' <span class="hs">HS</span>':'';
+    return `Round ${k.round_num??'-'} · ${fmtRoundTime(k)} - `
+        + `<span class="${aS}">${k.attacker_name||'-'}</span> › ${weaponIconTag(k.weapon)}${fmtWeapon(k.weapon)}${hs} › `
+        + `<span class="${vS}">${k.victim_name||'-'}</span>`;
+}
+
+// Players at the stored tick nearest to (and preferably at/before) the target tick.
+async function playersAtTick(tick) {
+    let dict = null;
+    const entries = CHUNK_SOURCE ? CHUNK_SOURCE.entries : [];
+    if (entries.length) {
+        let ci = entries.findIndex(c => tick >= c.tickStart && tick <= c.tickEnd);
+        if (ci === -1) {
+            // Kill ticks can land in gaps between chunks - use the last chunk before it.
+            for (let i = entries.length-1; i >= 0; i--) {
+                if (entries[i].tickStart <= tick) { ci = i; break; }
+            }
+        }
+        if (ci === -1) return null;
+        if (!chunkCache.has(ci)) {
+            chunkCache.set(ci, await CHUNK_SOURCE.fetchDict(ci));
+        }
+        dict = chunkCache.get(ci);
+    } else if (MATCH.ticks) {
+        dict = MATCH.ticks;   // legacy flat-ticks format
+    }
+    if (!dict) return null;
+
+    let bestLe=null, leDiff=Infinity, bestAny=null, anyDiff=Infinity;
+    for (const key in dict) {
+        const t = +key, d = tick - t, ad = Math.abs(d);
+        if (d >= 0 && d < leDiff)  { leDiff = d;  bestLe = key; }
+        if (ad < anyDiff)          { anyDiff = ad; bestAny = key; }
+    }
+    const key = bestLe ?? bestAny;
+    return key != null ? dict[key] : null;
+}
+
+function drawFragBase() {
+    fctx.clearRect(0, 0, fragCanvas.width, fragCanvas.height);
+    if (mapImgReady) {
+        fctx.drawImage(mapImg, 0, 0, fragCanvas.width, fragCanvas.height);
+    } else {
+        fctx.fillStyle = '#0d1117';
+        fctx.fillRect(0, 0, fragCanvas.width, fragCanvas.height);
+    }
+}
+
+function drawFrag(players, kill) {
+    lastFrag = { players, kill };
+    drawFragBase();
+    if (!players || !players.length) return;
+    const cfg = Match2DLogic.mapConfigFor(MATCH.mapName);
+
+    // First pass: positions (needed for the attacker→victim line under the dots)
+    let aPos=null, vPos=null;
+    const drawn = players.map(p => {
+        const pos = w2c(cfg, p.X, p.Y);
+        if (p.name === kill.attacker_name) aPos = pos;
+        if (p.name === kill.victim_name)   vPos = pos;
+        return { p, pos };
+    });
+
+    if (aPos && vPos) {
+        fctx.save();
+        fctx.setLineDash([10, 8]);
+        fctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        fctx.lineWidth = 3;
+        fctx.beginPath(); fctx.moveTo(aPos.x, aPos.y); fctx.lineTo(vPos.x, vPos.y); fctx.stroke();
+        fctx.restore();
+    }
+
+    // Sizes are ~2× viewer.js: the 1024px canvas is displayed at ~420px wide.
+    for (const { p, pos } of drawn) {
+        const col = p.side === 'ct' ? '#4a9eff' : '#ffaa22';
+        if (p.health <= 0) {
+            fctx.save();
+            fctx.strokeStyle = col; fctx.globalAlpha = 0.85; fctx.lineWidth = 4;
+            fctx.beginPath();
+            fctx.moveTo(pos.x-8, pos.y-8); fctx.lineTo(pos.x+8, pos.y+8);
+            fctx.moveTo(pos.x+8, pos.y-8); fctx.lineTo(pos.x-8, pos.y+8);
+            fctx.stroke();
+            fctx.restore();
+        } else {
+            fctx.beginPath(); fctx.arc(pos.x, pos.y, 13, 0, Math.PI*2);
+            fctx.fillStyle = col; fctx.fill();
+            fctx.strokeStyle = 'rgba(255,255,255,0.85)'; fctx.lineWidth = 3; fctx.stroke();
+        }
+        const focus = p.name === kill.attacker_name || p.name === kill.victim_name;
+        fctx.fillStyle   = focus ? 'white' : 'rgba(255,255,255,0.75)';
+        fctx.font        = `${focus ? 'bold ' : ''}21px ${FmtLogic.FONT_NARROW}`;
+        fctx.shadowColor = 'rgba(0,0,0,0.95)'; fctx.shadowBlur = 6;
+        fctx.fillText(p.name, pos.x + 18, pos.y + 7);
+        fctx.shadowBlur = 0;
+    }
+
+    // Highlight rings on top: white for the attacker, red for the victim
+    const ring = (pos, color) => {
+        fctx.beginPath(); fctx.arc(pos.x, pos.y, 24, 0, Math.PI*2);
+        fctx.strokeStyle = color; fctx.lineWidth = 4; fctx.stroke();
+    };
+    if (aPos) ring(aPos, 'rgba(255,255,255,0.9)');
+    if (vPos) ring(vPos, 'rgba(255,68,85,0.9)');
+}
+
+async function showFrag(idx) {
+    const k = KILLS[idx];
+    if (!k) return;
+    selectedKillIdx = idx;
+    document.querySelectorAll('#kill-log .kill-row').forEach(r =>
+        r.classList.toggle('selected', +r.dataset.idx === idx));
+
+    const cap  = document.getElementById('frag-caption');
+    const link = document.getElementById('frag-replay-link');
+    link.href  = '/viewer?match='+encodeURIComponent(matchFile)
+               + '&tick='+Math.max(0, (k.tick||0) - 2*TICKRATE);   // rewind ~2s for context
+    link.style.display = '';
+    // Same moment, but in the game itself: the killer's POV (a suicide has no
+    // attacker, so that falls back to the victim).
+    const demoBtn = document.getElementById('frag-demo-btn');
+    demoBtn.dataset.tick  = k.tick || 0;
+    demoBtn.dataset.focus = encodeURIComponent(k.attacker_name || k.victim_name || '');
+    demoBtn.style.display = '';
+
+    cap.textContent = 'Loading round data…';
+    try {
+        const players = await playersAtTick(k.tick||0);
+        drawFrag(players, k);
+        cap.innerHTML = fragCaption(k) + (players ? '' : '<br>No tick data found for this frag.');
+    } catch (err) {
+        console.error(err);
+        cap.textContent = 'Failed to load tick data for this frag.';
+    }
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Shared helpers: fixed team identity, and which side a team played in a
+// given round (they swap at halftime).
+// Team identity is FIXED across the halftime swap (Team 1 = first-half CT), the
+// same convention as isSwappedAtRound() and the 2D viewer. A player's SIDE swaps
+// at halftime, so we derive each player's first-half side once (from the side-
+// carrying kill/damage events, translated back through the swap schedule) and
+// resolve their side at any round from there.
+// ══════════════════════════════════════════════════════════════════════════════
+let FIRST_HALF_SIDE = null;   // name -> 'ct' | 't'
+function normSide(s) {
+    s = (s||'').toLowerCase();
+    return s==='ct' ? 'ct' : (s==='t'||s==='terrorist') ? 't' : null;
+}
+function ensureSideMap() {
+    if (FIRST_HALF_SIDE) return FIRST_HALF_SIDE;
+    const m = {};
+    const note = (name, side, rnum) => {
+        const s = normSide(side);
+        if (!name || !s || rnum == null || (name in m)) return;
+        m[name] = isSwappedAtRound(rnum) ? (s==='ct'?'t':'ct') : s;   // back to first-half frame
+    };
+    (MATCH?.kills||[]).forEach(k => { note(k.attacker_name,k.attacker_side,k.round_num); note(k.victim_name,k.victim_side,k.round_num); });
+    (MATCH?.damage||[]).forEach(d => { note(d.attacker_name,d.attacker_side,d.round_num); note(d.victim_name,d.victim_side,d.round_num); });
+    FIRST_HALF_SIDE = m;
+    return m;
+}
+function teamIdOf(name) {                 // 1 = first-half CT, 2 = first-half T, 0 = unknown
+    const fh = ensureSideMap()[name];
+    return fh==='ct' ? 1 : fh==='t' ? 2 : 0;
+}
+function sideAtRound(name, rnum) {
+    const fh = ensureSideMap()[name];
+    if (!fh || rnum == null) return null;
+    return isSwappedAtRound(rnum) ? (fh==='ct'?'t':'ct') : fh;
+}
+let ROUND_SPANS = null;
+function tickToRound(tick) {
+    if (!ROUND_SPANS) {
+        ROUND_SPANS = (MATCH?.rounds||[]).map((r,i)=>({ num:r.round_num??(i+1), start:r.start??0, end:r.end??Infinity }))
+            .sort((a,b)=>a.start-b.start);
+        for (let i=0;i<ROUND_SPANS.length;i++)
+            if (!isFinite(ROUND_SPANS[i].end)) ROUND_SPANS[i].end = ROUND_SPANS[i+1] ? ROUND_SPANS[i+1].start : Infinity;
+    }
+    for (const s of ROUND_SPANS) if (tick>=s.start && tick<=s.end) return s.num;
+    return null;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §5.2 Duels matrix - N×N player-vs-player duel win%, grouped by fixed team.
+// ══════════════════════════════════════════════════════════════════════════════
+let duelsBuilt = false;
+function renderDuels() {
+    if (duelsBuilt) return; duelsBuilt = true;
+    const kills = (MATCH?.kills||[]).filter(k => k.attacker_name && k.victim_name && k.attacker_name!==k.victim_name);
+    const kBy = {}; kills.forEach(k => kBy[k.attacker_name]=(kBy[k.attacker_name]||0)+1);
+    const seen = new Set(); kills.forEach(k => { seen.add(k.attacker_name); seen.add(k.victim_name); });
+    const players = [...seen].sort((a,b)=> (teamIdOf(a)-teamIdOf(b)) || ((kBy[b]||0)-(kBy[a]||0)) || a.localeCompare(b));
+    const idx = {}; players.forEach((p,i)=>idx[p]=i);
+    const n = players.length;
+    const mat = Array.from({length:n}, ()=>new Array(n).fill(0));
+    kills.forEach(k => { mat[idx[k.attacker_name]][idx[k.victim_name]]++; });
+
+    const teamCls = p => teamIdOf(p)===1?'dl-t1':teamIdOf(p)===2?'dl-t2':'';
+    const short   = p => p.length>14 ? p.slice(0,13)+'…' : p;
+    const splitAt = players.findIndex(p => teamIdOf(p)===2);
+
+    // Colour each cell by its win% vs 50/50: GREEN when the row player wins this
+    // matchup more often than not, RED when they lose it more often, faint
+    // neutral at an even split. Shade = how lopsided (distance from 50%).
+    const cellStyle = (pct) => {
+        const diff = pct - 50;
+        if (diff === 0) return ` style="background:rgba(150,150,150,0.12)"`;
+        const a = (0.18 + 0.5 * (Math.abs(diff) / 50)).toFixed(3);
+        const rgb = diff > 0 ? '70,209,122' : '255,85,102';   // green up / red down
+        return ` style="background:rgba(${rgb},${a})"`;
+    };
+
+    let head = `<th class="dl-corner">killer&nbsp;╲&nbsp;victim</th>`;
+    players.forEach((p,j)=> head += `<th class="dl-col ${teamCls(p)} ${j===splitAt?'dl-teamsplit':''}" title="${p}"><span>${short(p)}</span></th>`);
+    head += `<th class="dl-tot">Σ K</th>`;
+
+    let body = '';
+    players.forEach((p,i)=>{
+        let rowKills=0, cells='';
+        players.forEach((q,j)=>{
+            const v=mat[i][j], opp=mat[j][i], total=v+opp; rowKills+=v;
+            const self=i===j;
+            const cls=self?'dl-self':(total===0?'dl-zero':'dl-hit');
+            const pct = total ? Math.round(100*v/total) : null;
+            const style=self||pct==null?'':cellStyle(pct);
+            const title=!self&&total?` title="${p} won ${v} of ${total} duels vs ${q} (${pct}%)"`:'';
+            cells += `<td class="${cls} ${j===splitAt?'dl-teamsplit':''}"${style}${title}>${self?'-':(pct!=null?pct+'%':'')}</td>`;
+        });
+        cells += `<td class="dl-tot">${rowKills}</td>`;
+        body += `<tr class="${i===splitAt?'dl-teamsplit':''}"><th class="dl-row ${teamCls(p)}" title="${p}">${short(p)}</th>${cells}</tr>`;
+    });
+
+    let foot = `<th class="dl-tot dl-row">Σ D</th>`;
+    players.forEach((q,j)=>{ let col=0; for(let i=0;i<n;i++) col+=mat[i][j]; foot += `<td class="dl-tot ${j===splitAt?'dl-teamsplit':''}">${col}</td>`; });
+    foot += `<td class="dl-tot"></td>`;
+
+    document.getElementById('duels-wrap').innerHTML = n
+        ? `<table class="duels-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody><tfoot><tr class="dl-teamsplit">${foot}</tr></tfoot></table>`
+        : `<div class="c-dim" style="padding:20px">No kills recorded.</div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §5.1 Heatmaps - event density on the radar map.
+//
+// Source positions come from the master JSON's positioned arrays (shots
+// eye-pos, he/flashes/infernos/smokes detonation X,Y) and - since the parser
+// started emitting them (2026-08-19) - from the kills themselves:
+// attacker_x/y is where the killer stood, victim_x/y where the victim fell.
+//
+// Those two fields are the point of this pass. The old code had to APPROXIMATE
+// a kill's position by the attacker's nearest shot within 128 ticks, which is
+// wrong in three ways at once: a knife or grenade kill has no shot to anchor
+// to and was silently dropped; an entry fragged before firing likewise; and a
+// player who had been holding an angle got plotted where they last fired
+// rather than where the duel happened. The nearest-shot path is kept only as a
+// fallback for matches parsed before the coordinates existed, and the panel
+// says which one it used rather than letting an approximation pass as data.
+//
+// Rendering is the shared static/momentheat.{logic.,}js - the same additive
+// soft-blob density layer, sqrt intensity scaling and legend the Match
+// Analyser's result heatmap uses, in each layer's own hue (see
+// MomentHeatLogic.shade). It replaces a hard 96×96 grid that was upscaled 10×
+// with image smoothing, had no legend, and drew each layer fully over the one
+// beneath it.
+//
+// Points are extracted once; a filter change only re-bins (cheap) and repaints.
+// ══════════════════════════════════════════════════════════════════════════════
+const HEAT_LAYERS = [
+    { key:'kills',   label:'Killer locations', color:'#ff4d4d' },
+    { key:'deaths',  label:'Death locations',  color:'#a64dff' },
+    { key:'shots',   label:'Shots',            color:'#ffd24d' },
+    { key:'he',      label:'HE grenades',      color:'#ff8c1a' },
+    { key:'molotov', label:'Molotovs',         color:'#ff5a1a' },
+    { key:'flash',   label:'Flashes',          color:'#4da6ff' },
+    { key:'smoke',   label:'Smokes',           color:'#c0c0c0' },
+];
+// Bin size in base-canvas px on the 1024² radar. Smaller than the analyser's
+// default because one match is a much smaller sample than a corpus query, and
+// a coarse grid over ~150 kills reads as four big smudges.
+const HEAT_CELL = 20;
+let HEAT = null;
+const heatState = { layers: new Set(['kills']), side:'all', team:'all', round:'all' };
+let heatInited = false, heatMapReady = false, heatPending = false;
+const heatMapImg = new Image();
+
+function buildHeatData() {
+    if (HEAT) return HEAT;
+    const layers = {}; HEAT_LAYERS.forEach(l=>layers[l.key]=[]);
+    const push = (key,x,y,name,rnum,sideDirect) => {
+        if (x==null || y==null) return;
+        layers[key].push({ x, y, side: sideDirect || sideAtRound(name,rnum) || '', team: teamIdOf(name), round: rnum });
+    };
+    (MATCH.shots||[]).forEach(s => {
+        const w=(s.weapon||'').toLowerCase();
+        if (w.includes('knife')||w.includes('grenade')||w.includes('molotov')||w.includes('flash')||w.includes('smoke')||w.includes('decoy')||w.includes('bomb')) return;
+        push('shots', s.eye_x, s.eye_y, s.player_name, tickToRound(s.tick), normSide(s.player_side));
+    });
+    (MATCH.he||[]).forEach(g       => push('he',      g.X, g.Y, g.thrower_name, tickToRound(g.tick)));
+    (MATCH.flashes||[]).forEach(g  => push('flash',   g.X, g.Y, g.thrower_name, tickToRound(g.tick)));
+    (MATCH.infernos||[]).forEach(g => push('molotov', g.X, g.Y, g.thrower_name, tickToRound(g.start_tick)));
+    (MATCH.smokes||[]).forEach(g   => push('smoke',   g.X, g.Y, g.thrower_name, tickToRound(g.start_tick)));
+
+    // Killer/death locations. The parser records both endpoints of every duel
+    // on the kill row itself; use those. No `omitempty` on those fields, so 0
+    // is a legal coordinate and only `undefined` means "parsed before they
+    // existed" - never test them for truthiness.
+    const hasCoord = v => typeof v === 'number' && isFinite(v);
+
+    // Fallback for pre-2026-08-19 parses only: the attacker's nearest shot at
+    // or just before the kill tick. Approximate by construction - see the
+    // section comment - and reported as such in the panel.
+    const byPlayer = {};
+    (MATCH.shots||[]).forEach(s => (byPlayer[s.player_name]=byPlayer[s.player_name]||[]).push(s));
+    Object.values(byPlayer).forEach(a=>a.sort((x,y)=>x.tick-y.tick));
+    const nearestShot = (name, tick) => {
+        const a = byPlayer[name]; if (!a) return null;
+        let lo=0, hi=a.length-1, best=-1;
+        while (lo<=hi){ const m=(lo+hi)>>1; if (a[m].tick<=tick){best=m; lo=m+1;} else hi=m-1; }
+        if (best<0 || tick-a[best].tick > 128) return null;   // no recent shot → util/knife, skip
+        return a[best];
+    };
+
+    let exact = 0, approx = 0, missing = 0;
+
+    (MATCH.kills||[]).forEach(k => {
+        if (!k.attacker_name || k.attacker_name===k.victim_name) return;
+        if (hasCoord(k.attacker_x) && hasCoord(k.attacker_y)) {
+            layers.kills.push({ x:k.attacker_x, y:k.attacker_y, side: normSide(k.attacker_side)||'',
+                                team: teamIdOf(k.attacker_name), round: k.round_num });
+            exact++;
+        } else {
+            const as = nearestShot(k.attacker_name, k.tick);
+            if (as) { layers.kills.push({ x:as.eye_x, y:as.eye_y, side: normSide(k.attacker_side)||'',
+                                          team: teamIdOf(k.attacker_name), round: k.round_num }); approx++; }
+            else missing++;
+        }
+        if (!k.victim_name) return;
+        if (hasCoord(k.victim_x) && hasCoord(k.victim_y)) {
+            layers.deaths.push({ x:k.victim_x, y:k.victim_y, side: normSide(k.victim_side)||'',
+                                 team: teamIdOf(k.victim_name), round: k.round_num });
+            exact++;
+        } else {
+            const vs = nearestShot(k.victim_name, k.tick);
+            if (vs) { layers.deaths.push({ x:vs.eye_x, y:vs.eye_y, side: normSide(k.victim_side)||'',
+                                           team: teamIdOf(k.victim_name), round: k.round_num }); approx++; }
+            else missing++;
+        }
+    });
+    HEAT = { layers, exact, approx, missing };
+    return HEAT;
+}
+
+function initHeatmaps() {
+    if (heatInited) return;
+    // The match JSON arrives asynchronously, and ?tab=heatmaps opens this tab
+    // on DOMContentLoaded - i.e. before it. Building here threw on a null
+    // MATCH, and because heatInited had already been set the tab stayed empty
+    // for the rest of the session even once the data landed. Remember the
+    // request instead and let the fetch's .then() replay it.
+    if (!MATCH) { heatPending = true; return; }
+    heatInited = true;
+    heatPending = false;
+    buildHeatData();
+    heatMapImg.onload  = () => { heatMapReady=true;  renderHeat(); };
+    heatMapImg.onerror = () => { heatMapReady=false; renderHeat(); };
+    heatMapImg.src = MapsLogic.radarUrl(MATCH.mapName);
+    buildHeatControls();
+    renderHeat();
+}
+
+// Team 1/2 are the fixed first-half-CT/first-half-T identity (§5 comment above)
+// - there's no clan name to show instead (solo-queue MM), so the roster itself
+// is the only way to say which team is which.
+function teamRoster(id) {
+    const sides = ensureSideMap();
+    return Object.keys(sides).filter(n => teamIdOf(n) === id).sort();
+}
+
+function buildHeatControls() {
+    const c = document.getElementById('heat-controls');
+    const layerRows = HEAT_LAYERS.map(l=>`
+        <label class="heat-check"><input type="checkbox" data-layer="${l.key}" ${heatState.layers.has(l.key)?'checked':''}>
+        <span class="heat-swatch" style="background:${l.color}"></span>${l.label}
+        <span style="margin-left:auto;color:var(--dim)">${(HEAT.layers[l.key]||[]).length}</span></label>`).join('');
+    const seg = (name,opts)=>`<div class="heat-seg" data-seg="${name}">`+opts.map(o=>`<button data-val="${o[0]}" title="${o[2]||''}" class="${heatState[name]===o[0]?'active':''}">${o[1]}</button>`).join('')+`</div>`;
+    const rounds = (MATCH.rounds||[]).map((r,i)=>{const n=r.round_num??(i+1);return `<option value="${n}">Round ${n}</option>`;}).join('');
+    const t1 = teamRoster(1), t2 = teamRoster(2);
+    c.innerHTML = `
+        <div class="heat-group"><h4>Layers</h4>${layerRows}</div>
+        <div class="heat-group"><h4>Side</h4>${seg('side',[['all','All'],['ct','CT'],['t','T']])}</div>
+        <div class="heat-group"><h4>Team</h4>${seg('team',[['all','All'],['1','Team 1',t1.join(', ')],['2','Team 2',t2.join(', ')]])}
+            <div class="heat-roster"><span class="dl-t1">T1</span> ${t1.join(', ')||'-'}<br><span class="dl-t2">T2</span> ${t2.join(', ')||'-'}</div>
+        </div>
+        <div class="heat-group"><h4>Round</h4><select class="heat-round" id="heat-round"><option value="all">Whole match</option>${rounds}</select></div>`;
+    c.querySelectorAll('input[data-layer]').forEach(cb=>cb.addEventListener('change',()=>{
+        if (cb.checked) heatState.layers.add(cb.dataset.layer); else heatState.layers.delete(cb.dataset.layer);
+        renderHeat();
+    }));
+    c.querySelectorAll('.heat-seg').forEach(sg=>sg.addEventListener('click',e=>{
+        const b=e.target.closest('button'); if(!b) return;
+        heatState[sg.dataset.seg]=b.dataset.val;
+        sg.querySelectorAll('button').forEach(x=>x.classList.toggle('active',x===b));
+        renderHeat();
+    }));
+    c.querySelector('#heat-round').addEventListener('change',e=>{ heatState.round=e.target.value; renderHeat(); });
+}
+
+// Points of one layer that survive the current side/team/round filters.
+function heatPointsFor(key) {
+    const roundFilter = heatState.round === 'all' ? null : +heatState.round;
+    return (HEAT.layers[key] || []).filter(pt =>
+        (heatState.side === 'all' || pt.side === heatState.side) &&
+        (heatState.team === 'all' || String(pt.team) === heatState.team) &&
+        (roundFilter == null || pt.round === roundFilter));
+}
+
+function renderHeat() {
+    const canvas = document.getElementById('heatCanvas');
+    const ctx = canvas.getContext('2d');
+    const W=canvas.width, H=canvas.height;
+    ctx.clearRect(0,0,W,H);
+    // The radar is the reference frame, so it stays legible under the layers;
+    // 0.6 rather than 0.5 now that the density layer is soft rather than a
+    // solid block of colour.
+    if (heatMapReady) { ctx.globalAlpha=0.6; ctx.drawImage(heatMapImg,0,0,W,H); ctx.globalAlpha=1; }
+    else { ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,W,H); }
+
+    const emptyEl  = document.getElementById('heat-empty');
+    const legendEl = document.getElementById('heat-legend');
+    const active = HEAT_LAYERS.filter(l=>heatState.layers.has(l.key));
+    if (!active.length) {
+        emptyEl.style.display='flex';
+        emptyEl.textContent='Select at least one layer to show density.';
+        legendEl.innerHTML = '';
+        return;
+    }
+
+    const cfg = Match2DLogic.mapConfigFor(MATCH.mapName);
+    const toCanvas = (wx, wy) => w2c(cfg, wx, wy);
+    const rows = [];
+    let any = false;
+
+    active.forEach(l => {
+        const pts = heatPointsFor(l.key);
+        if (!pts.length) return;
+        // Under ~25 points a density estimate is a fiction - plot the moments
+        // themselves instead. Same threshold and reasoning as the analyser's
+        // result heatmap.
+        const mode = pts.length < 25 ? 'points' : 'heat';
+        const binned = MomentHeat.draw(ctx, {
+            points: pts, worldToCanvas: toCanvas, w: W, h: H,
+            cell: HEAT_CELL, color: l.color, mode: mode, alpha: 0.66,
+        });
+        if (!binned || !binned.total) return;
+        any = true;
+        rows.push(`<div class="heat-legend-row">${
+            MomentHeat.legendHtml(binned, l.label, l.color)}${
+            mode === 'points' ? '<span class="heat-legend-r">plotted individually</span>' : ''}</div>`);
+    });
+
+    // Provenance: with the kill layers on, say whether the positions are the
+    // parser's own or the nearest-shot approximation, so an old parse can't
+    // quietly read as measured data.
+    const killish = active.some(l => l.key === 'kills' || l.key === 'deaths');
+    if (killish && HEAT.approx) {
+        rows.push(`<div class="heat-legend-row heat-legend-note">⚠ ${HEAT.approx} kill/death
+            position${HEAT.approx === 1 ? '' : 's'} approximated from the nearest shot
+            (this match predates kill coordinates - re-parse it for exact ones)${
+            HEAT.missing ? `, ${HEAT.missing} could not be placed at all` : ''}.</div>`);
+    }
+
+    legendEl.innerHTML = rows.join('');
+    emptyEl.style.display = any ? 'none' : 'flex';
+    if (!any) emptyEl.textContent = 'No events match these filters.';
+}
+
+document.getElementById('frag-demo-btn').addEventListener('click', function () {
+    DemoJump.launch({ match: matchFile, tick: +this.dataset.tick,
+                      focusPlayer: decodeURIComponent(this.dataset.focus || ''),
+                      button: this });
+});
+
+document.querySelectorAll('.tab-btn').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+        document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+        document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('tab-'+btn.dataset.tab).classList.add('active');
+        if (btn.dataset.tab === 'overwatch')        loadOverwatch();
+        else if (btn.dataset.tab === 'highlights')  loadHighlights();
+        else if (btn.dataset.tab === 'duels')       renderDuels();
+        else if (btn.dataset.tab === 'heatmaps')    initHeatmaps();
+    });
+});
+
+// Deep link: /match?match=…&tab=overwatch opens that tab directly (used by the
+// global Overwatch dashboard). Unknown tab names fall through to Scoreboard.
+// Deferred to DOMContentLoaded: the click handlers reference bindings (owLoaded
+// etc.) declared further down this script, which are TDZ until it finishes.
+window.addEventListener('DOMContentLoaded', () => {
+    const deepTab = new URLSearchParams(location.search).get('tab');
+    if (deepTab) document.querySelector(`.tab-btn[data-tab="${CSS.escape(deepTab)}"]`)?.click();
+});
+
+// ── Highlights tab ───────────────────────────────────────────────────────────
+// One flat, priority-ranked list of every player's best moments in this match
+// (clutches → multi-kills → impact kills - analysis/highlights.py's
+// highlight_sort_key, applied across players). Server-computed: the detector is
+// Python with its own unit suite (test/highlights_test.py), and clip_url needs
+// a disk check anyway, so there's nothing to gain from a JS port.
+const HL_TYPE_LABEL = { clutch: 'Clutch', multikill: 'Multi-kill', impact_kill: 'Kill' };
+const HL_CAP = 25;                 // rows shown before "+ show N more"
+let hlLoaded   = false;
+let HL_ROWS    = [];               // server rows; the index IS the row id suffix
+let hlFilter   = { type: 'all', player: 'all' };
+let hlExpanded = false;
+
+const hlEsc = FmtLogic.esc;
+
+function loadHighlights() {
+    if (hlLoaded) return;
+    hlLoaded = true;
+    const status = document.getElementById('hl-status');
+    status.className = 'ow-status';
+    status.innerText = 'Building the reel…';
+    fetch('/match/highlights?match=' + encodeURIComponent(matchFile))
+        .then(r => r.json().then(d => ({ http: r.status, d })))
+        .then(({ http, d }) => {
+            if (!d.ok) throw new Error(d.error || ('HTTP ' + http));
+            HL_ROWS = d.highlights || [];
+            renderHighlights();
+        })
+        .catch(e => {
+            hlLoaded = false;      // allow retry on next tab open
+            status.className = 'ow-status error';
+            status.innerText = 'Highlights unavailable:\n' + e.message;
+        });
+}
+
+// Row ids are `hl-<index into HL_ROWS>`: unique page-wide (the Overwatch tab's
+// are `<steamid>-<i>`), stable across every filter change because filtering
+// never re-renders, and a valid CSS id selector.
+//
+// Markup + button set come from the shared static/momentrow.logic.js - the
+// same builder the Overwatch tab, the player page and the Multi Match
+// Analyser use, so a change to a moment row lands everywhere at once.
+function hlRowHtml(h, i) {
+    return MomentRowLogic.rowHtml(h, {
+        idPrefix: 'hl', index: i, matchFile,
+        showType: true, showPlayer: true, typeLabels: HL_TYPE_LABEL,
+    });
+}
+
+function renderHighlights() {
+    const list = document.getElementById('hl-list');
+    const status = document.getElementById('hl-status');
+    if (!HL_ROWS.length) {
+        status.innerText = 'No highlight moments detected in this match.';
+        return;
+    }
+    status.style.display = 'none';
+    list.innerHTML = HL_ROWS.map(hlRowHtml).join('');
+
+    // Type chips carry their count, so an empty filter is visible before it's
+    // clicked (and is disabled rather than yielding a blank list).
+    const counts = HL_ROWS.reduce((a, h) => (a[h.type] = (a[h.type] || 0) + 1, a), {});
+    document.querySelectorAll('.hl-chip').forEach(chip => {
+        const f = chip.dataset.filter;
+        const n = f === 'all' ? HL_ROWS.length : (counts[f] || 0);
+        chip.textContent = `${chip.textContent} (${n})`;
+        chip.disabled = n === 0;
+        chip.addEventListener('click', () => {
+            document.querySelectorAll('.hl-chip').forEach(c => c.classList.toggle('active', c === chip));
+            hlFilter.type = f; hlExpanded = false; applyHlFilter();
+        });
+    });
+
+    // Player filter, most moments first - the match's stars sit at the top.
+    const byPlayer = {};
+    HL_ROWS.forEach(h => byPlayer[h.player] = (byPlayer[h.player] || 0) + 1);
+    const sel = document.getElementById('hl-player');
+    Object.entries(byPlayer).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .forEach(([n, c]) => sel.insertAdjacentHTML('beforeend',
+            `<option value="${hlEsc(n)}">${hlEsc(n)} (${c})</option>`));
+    sel.addEventListener('change', () => {
+        hlFilter.player = sel.value; hlExpanded = false; applyHlFilter();
+    });
+
+    document.getElementById('hl-more').addEventListener('click', () => {
+        hlExpanded = !hlExpanded; applyHlFilter();
+    });
+    document.getElementById('hl-filters').style.display = '';
+
+    // One delegated wiring call covers preview / record / close / CS2 jump for
+    // every row, including rows a later "show more" reveals (static/momentrow.js).
+    MomentRow.wire(list, { matchFile, matchData: window.__matchData || null });
+    MomentRow.primeClips(list, HL_ROWS, 'hl');
+
+    applyHlFilter();
+}
+
+
+// Filtering hides rows in place rather than re-rendering: a re-render would
+// blow away a mounted preview or an open clip box on rows that survive the
+// filter. The cap applies to the FILTERED sequence, and any filter change
+// resets the expansion, so a narrowed list always starts at its own top.
+function applyHlFilter() {
+    const list = document.getElementById('hl-list');
+    let matched = 0, shown = 0;
+    list.querySelectorAll('.hl-item').forEach(item => {
+        const h = HL_ROWS[+item.dataset.idx];
+        const pass = (hlFilter.type === 'all' || h.type === hlFilter.type)
+                  && (hlFilter.player === 'all' || h.player === hlFilter.player);
+        let visible = false;
+        if (pass) { matched++; visible = hlExpanded || matched <= HL_CAP; }
+        if (!visible && !item.hidden) MomentRow.teardownRow(list, item);
+        item.hidden = !visible;
+        if (visible) shown++;
+    });
+    const more = document.getElementById('hl-more');
+    if (matched > HL_CAP) {
+        more.style.display = '';
+        more.textContent = hlExpanded ? '− show fewer' : `+ show ${matched - shown} more`;
+    } else {
+        more.style.display = 'none';
+    }
+    document.getElementById('hl-count').textContent = matched === HL_ROWS.length
+        ? `${HL_ROWS.length} moments`
+        : `${matched} of ${HL_ROWS.length} moments`;
+}
+
+// ── Overwatch tab (add-on) ────────────────────────────────────────────────────
+
+const OW_GROUPS = [
+    ['aim',   'Aim Mechanics'],
+    ['incon', 'Performance–Skill Inconsistency'],
+    ['info',  'Information Advantage'],
+];
+const OW_LEVELS = {
+    high:         'HIGH - REVIEW',
+    elevated:     'ELEVATED',
+    low:          'UNREMARKABLE',
+    insufficient: 'TOO FEW KILLS',
+    verified_pro: 'VERIFIED PRO',
+};
+let owLoaded = false;
+
+function loadOverwatch() {
+    if (owLoaded) return;
+    owLoaded = true;
+    const status = document.getElementById('ow-status');
+    status.className = 'ow-status';
+    status.innerText = 'Analyzing demo… (first run extracts raw data, can take a minute)';
+    fetch('/overwatch?match=' + encodeURIComponent(matchFile))
+        .then(r => r.json().then(d => ({ http: r.status, d })))
+        .then(({ http, d }) => {
+            if (!d.ok) throw new Error(d.error || ('HTTP ' + http));
+            status.innerText = '';
+            renderOverwatch(d);
+        })
+        .catch(e => {
+            owLoaded = false; // allow retry on next tab open
+            status.className = 'ow-status error';
+            status.innerText = 'Overwatch analysis unavailable:\n' + e.message;
+        });
+}
+
+function owFmt(v, fmt) {
+    if (v == null) return '-';
+    if (fmt === 'pct') return v.toFixed(1) + '%';
+    if (fmt === 'deg') return v.toFixed(1) + '°';
+    if (fmt === 'ms')  return v.toFixed(0) + 'ms';
+    return v.toFixed(2);
+}
+
+function owPctSuffix(n) {
+    if (n == null) return '';
+    const s = Math.round(n);
+    if (s % 100 === 11 || s % 100 === 12 || s % 100 === 13) return s + 'th';
+    if (s % 10 === 1) return s + 'st';
+    if (s % 10 === 2) return s + 'nd';
+    if (s % 10 === 3) return s + 'rd';
+    return s + 'th';
+}
+
+// All-players summary strip (top of the Overwatch tab) - one dot per
+// analyzed player on a 0-100 percentile axis for whichever feature the
+// dropdown names, so it's obvious at a glance where everybody lies rather
+// than having to open each card. No re-fetch on selection change: every
+// player's full feature list is already in `data.players` from the one
+// /overwatch fetch, so the dropdown just redraws the same in-memory data.
+let OW_SUMMARY_PLAYERS = [];
+const OW_SUMMARY_GRID = [0, 25, 50, 75, 99, 100];
+
+function renderOwSummary(players) {
+    OW_SUMMARY_PLAYERS = players || [];
+    const box = document.getElementById('ow-summary');
+    const select = document.getElementById('ow-summary-feat');
+    if (!OW_SUMMARY_PLAYERS.length || !OW_SUMMARY_PLAYERS[0].features || !OW_SUMMARY_PLAYERS[0].features.length) {
+        box.style.display = 'none';
+        return;
+    }
+    box.style.display = '';
+
+    // Every player carries the same feature set (analysis/features.py's
+    // FEATURE_DEFS applied uniformly), so the first player's list is the
+    // whole catalogue for this match.
+    const prevKey = select.value;
+    select.innerHTML = OW_SUMMARY_PLAYERS[0].features
+        .map(f => `<option value="${f.key}">${f.label}</option>`).join('');
+    select.value = OW_SUMMARY_PLAYERS[0].features.some(f => f.key === prevKey) ? prevKey : OW_SUMMARY_PLAYERS[0].features[0].key;
+
+    drawOwSummaryTrack(select.value);
+}
+
+// Row-packing layout for the name labels above the dot line. ROW_H is a
+// label row's height, GAP the minimum horizontal clearance required between
+// two labels sharing a row (below it they're read as touching), and BOTTOM
+// the space reserved under the dot line for the existing percentile-axis
+// tick + its number.
+const OW_SUMMARY_ROW_H = 12;
+const OW_SUMMARY_LABEL_GAP = 6;
+const OW_SUMMARY_BOTTOM = 18;
+const OW_SUMMARY_DEFAULT_H = 40;   // no players plotted - keep the old fixed height
+
+function drawOwSummaryTrack(featKey) {
+    const strip = document.getElementById('ow-summary-strip');
+
+    const missing = [];
+    const items = [];
+    OW_SUMMARY_PLAYERS.forEach(p => {
+        const f = (p.features || []).find(x => x.key === featKey);
+        if (!f || f.percentile == null) { missing.push(p.name); return; }
+        items.push({
+            name: p.name, level: p.level, pct: f.percentile,
+            title: `${hlEsc(p.name)} - ${owFmt(f.value, f.fmt)} (${owPctSuffix(f.percentile)} pct, n=${f.n_baseline})`,
+        });
+    });
+
+    const grid = OW_SUMMARY_GRID.map(pct =>
+        `<div class="ow-summary-grid" style="left:${pct}%"><span>${pct}</span></div>`).join('');
+    // Labels start at left:0/top:0 (position resolved below, once their
+    // rendered width can be measured) so a name that carries Cyrillic/CJK/
+    // wide characters is packed by its real width, not a guessed one.
+    const names = items.map(it =>
+        `<div class="ow-summary-name ${it.level}">${hlEsc(it.name)}</div>`).join('');
+    const dots = items.map(it =>
+        `<div class="ow-summary-dot ${it.level}" style="left:${it.pct}%" title="${it.title}"></div>`).join('');
+
+    strip.innerHTML = `<div class="ow-summary-track">
+        <div class="ow-summary-baseline"></div>
+        ${grid}
+        ${names}
+        ${dots}
+    </div>
+    ${missing.length ? `<div class="ow-summary-missing">Not enough baseline yet: ${missing.map(hlEsc).join(', ')}</div>` : ''}`;
+
+    const track = strip.querySelector('.ow-summary-track');
+    if (!items.length) { track.style.height = OW_SUMMARY_DEFAULT_H + 'px'; return; }
+
+    const trackWidth = track.getBoundingClientRect().width;
+    const nameEls = Array.from(track.querySelectorAll('.ow-summary-name'));
+    // Greedy left-to-right row packing, the standard way to stack labels
+    // that would otherwise overlap on a shared axis: sort by position, and
+    // whenever a label's left edge would land inside the last label already
+    // placed in a row (plus the gap), try the row above instead.
+    const placed = nameEls
+        .map((el, i) => ({ el, pct: items[i].pct, w: el.getBoundingClientRect().width }))
+        .sort((a, b) => a.pct - b.pct);
+    const rowRight = [];
+    let maxRow = 0;
+    placed.forEach(it => {
+        const center = trackWidth * it.pct / 100;
+        // Clamped so a label near either edge stays inside the track rather
+        // than overflowing it - a dot can sit flush with the edge, its name
+        // next to it cannot.
+        const left = Math.max(2, Math.min(trackWidth - it.w - 2, center - it.w / 2));
+        let row = 0;
+        while (rowRight[row] !== undefined && left < rowRight[row] + OW_SUMMARY_LABEL_GAP) row++;
+        rowRight[row] = left + it.w;
+        maxRow = Math.max(maxRow, row);
+        it.left = left;
+        it.row = row;
+    });
+
+    const dotY = (maxRow + 1) * OW_SUMMARY_ROW_H + 2;
+    placed.forEach(it => {
+        // Row 0 sits immediately above the dot line; higher rows stack
+        // further up, so a label never has to jump past a shorter neighbour.
+        it.el.style.left = it.left + 'px';
+        it.el.style.top = ((maxRow - it.row) * OW_SUMMARY_ROW_H) + 'px';
+    });
+
+    track.style.height = (dotY + OW_SUMMARY_BOTTOM) + 'px';
+    track.querySelector('.ow-summary-baseline').style.top = dotY + 'px';
+    track.querySelectorAll('.ow-summary-grid').forEach(g => { g.style.height = dotY + 'px'; });
+    track.querySelectorAll('.ow-summary-grid span').forEach(s => { s.style.top = (dotY + 4) + 'px'; });
+    track.querySelectorAll('.ow-summary-dot').forEach(d => { d.style.top = dotY + 'px'; });
+}
+
+document.getElementById('ow-summary-feat').addEventListener('change', e => drawOwSummaryTrack(e.target.value));
+
+function renderOverwatch(data) {
+    // Reflect pro-match state on the toggle button.
+    const proBtn = document.getElementById('ow-pro-match-btn');
+    proBtn.classList.toggle('active', !!data.is_pro_match);
+
+    renderOwSummary(data.players);
+
+    const wrap = document.getElementById('ow-players');
+    wrap.innerHTML = '';
+    // Show cheater-reference column only when the cheater baseline has data.
+    const showCheatCol = (data.n_cheat_players ?? 0) > 0;
+    const colCls = showCheatCol ? ' with-cheat' : '';
+
+    data.players.forEach(p => {
+        const card = document.createElement('div');
+        const lblCls = p.player_label ? ' labeled-' + p.player_label : '';
+        card.className = `ow-card level-${p.level}${lblCls}`;
+        card.dataset.steamId = p.steam_id;
+
+        const rankInfo = formatRank(p);
+        const rank = rankInfo ? rankInfo.full : 'unranked';
+
+        const groupsHtml = OW_GROUPS.map(([gk, gname]) => {
+            const feats = p.features.filter(f => f.group === gk);
+            if (!feats.length) return '';
+            const rows = feats.map(f => {
+                const pct = f.percentile;
+                const flagCls = pct == null ? '' : pct >= 99 ? 'alert' : pct >= 95 ? 'warn' : '';
+                const bar = pct == null ? 0 : Math.max(2, pct);
+                // `pooled` is this same value re-estimated from the player's other
+                // analyzed matches - independent corroboration, folded into the
+                // percentile badge's tooltip alongside the baseline sample count.
+                const poolTxt = f.pooled
+                    ? ` · pooled ${f.pooled.n_pool} events over ${f.pooled.n_matches} other match${f.pooled.n_matches === 1 ? '' : 'es'}` +
+                      (f.pooled.percentile != null ? ` (≈${owPctSuffix(f.pooled.percentile)} pooled)` : '')
+                    : '';
+                const pctTxt = pct == null
+                    ? `<span class="ow-pct" title="baseline too small (n=${f.n_baseline})${poolTxt}">n/a</span>`
+                    : `<span class="ow-pct ${flagCls}" title="${f.n_baseline} baseline samples${poolTxt}">${owPctSuffix(pct)}</span>`;
+                // Indicator tooltip: what it measures, plus this match's value,
+                // its confidence interval, and how many events back it - one
+                // hover on the indicator name explains everything about it.
+                const ciSuffix = f.ci ? ` (95% CI ${owFmt(f.ci[0], f.fmt)}–${owFmt(f.ci[1], f.fmt)})` : '';
+                const evSuffix = f.n_events != null ? ` from ${f.n_events} event${f.n_events === 1 ? '' : 's'} this match` : '';
+                const labelTip = `${f.desc || f.label}\n\nThis match: ${owFmt(f.value, f.fmt)}${ciSuffix}${evSuffix}`;
+                // Peer z-score badge - show when ≥1.5σ in suspicious direction.
+                let peerBadge = '';
+                if (f.peer_z != null && f.peer_z >= 1.5) {
+                    const pzCls = f.peer_z >= 2.5 ? 'pz-hot' : 'pz-warm';
+                    peerBadge = `<span class="ow-peer-z ${pzCls}" title="${f.peer_z.toFixed(1)}σ above match average">+${f.peer_z.toFixed(1)}σ*</span>`;
+                }
+                // Cheater-reference column: percentile vs confirmed-cheater distribution.
+                // ≥75th = above top quartile of cheaters (alert); ≥50th = above median (mid).
+                let cheatCell = '';
+                if (showCheatCol) {
+                    const cpct = f.cheat_percentile;
+                    if (cpct == null) {
+                        cheatCell = `<span class="ow-cheat-pct" title="cheater baseline too small (n=${f.n_cheat_baseline ?? 0})">n/a</span>`;
+                    } else {
+                        const ccls = cpct >= 75 ? 'cp-high' : cpct >= 50 ? 'cp-mid' : '';
+                        const ctip = `${f.n_cheat_baseline} confirmed-cheater samples · ${cpct >= 50 ? 'above' : 'below'} cheater median`;
+                        cheatCell = `<span class="ow-cheat-pct ${ccls}" title="${ctip}">${owPctSuffix(cpct)}</span>`;
+                    }
+                }
+                return `<div class="ow-feat-cols${colCls} ow-feat${flagCls ? ' row-' + flagCls : ''}">
+                    <span class="ow-feat-label" title="${labelTip}">${f.label}${peerBadge}</span>
+                    <span class="ow-feat-val">${owFmt(f.value, f.fmt)}</span>
+                    <span class="ow-bar-wrap"><span class="ow-bar ${flagCls}" style="width:${bar}%;display:block"></span></span>
+                    ${pctTxt}
+                    ${cheatCell}
+                </div>`;
+            }).join('');
+            const cheatHdr = showCheatCol ? '<span>vs Cheat</span>' : '';
+            return `<div class="ow-group">
+                <div class="ow-group-title">${gname}</div>
+                <div class="ow-feat-cols${colCls} ow-feat-header${colCls}">
+                    <span>Indicator</span><span>Value</span><span>Suspicion</span><span>Legit%</span>${cheatHdr}
+                </div>
+                ${rows}
+            </div>`;
+        }).join('');
+
+        // Rows come from the shared builder (static/momentrow.logic.js). The
+        // moments carry no `player` of their own - they're all this card's
+        // player, so the POV is passed once as focusPlayer.
+        const moments = (p.moments || []).map((m, mi) => MomentRowLogic.rowHtml(m, {
+            idPrefix: p.steam_id, index: mi, matchFile, focusPlayer: p.name,
+        })).join('');
+
+        const lbl = p.player_label;
+        const lblBtns = ['clean', 'suspicious', 'cheater', 'professional'].map(v => {
+            const active = lbl === v ? ' active-' + v : '';
+            const icons = {clean: '✓ Clean', suspicious: '? Suspicious', cheater: '✗ Cheater', professional: '★ Pro'};
+            return `<button class="ow-lbl-btn${active}" data-val="${v}">${icons[v]}</button>`;
+        }).join('');
+
+        // Composite z-score badge.
+        const cz = p.composite_z ?? 0;
+        const czCls = cz >= 4 ? 'z-hot' : cz >= 2.5 ? 'z-warm' : '';
+        const czBadge = `<span class="ow-composite ${czCls}" title="Combined suspicious z-score across all features (higher = more anomalous vs baseline)">Z·${cz.toFixed(1)}</span>`;
+        // Shrunk variant - same composite, but low-event features are pulled
+        // toward the baseline mean first. Only shown when it meaningfully
+        // diverges from the raw composite, so well-supported players see no
+        // extra noise.
+        const czShrunk = p.composite_z_shrunk ?? cz;
+        let czShrunkBadge = '';
+        if (Math.abs(cz - czShrunk) >= 0.3) {
+            const czsCls = czShrunk >= 4 ? 'z-hot' : czShrunk >= 2.5 ? 'z-warm' : '';
+            czShrunkBadge = `<span class="ow-composite shrunk ${czsCls}" title="Same composite z-score after down-weighting features backed by very few events toward the baseline mean - compare against Z· to see which players' scores rest on thin samples.">Zs·${czShrunk.toFixed(1)}</span>`;
+        }
+
+        card.innerHTML = `
+            <div class="ow-head">
+                <span class="ow-name">${p.name}</span>
+                <span class="ow-meta">${rank} · ${p.kills} kills · <a class="ow-steamid" href="https://steamcommunity.com/profiles/${p.steam_id}" target="_blank" title="Steam profile">${p.steam_id}</a></span>
+                <span class="ow-level ${p.level}">${OW_LEVELS[p.level] || p.level}</span>
+                ${czBadge}
+                ${czShrunkBadge}
+                <div class="ow-label-row">${lblBtns}</div>
+            </div>
+            <div class="ow-body">
+                <div class="ow-groups">${groupsHtml}</div>
+                ${moments ? `
+                <div class="ow-moments">
+                    <div class="ow-moments-title">Flagged moments</div>
+                    <div class="ow-moment-list">${moments}</div>
+                </div>` : ''}
+            </div>`;
+
+        card.querySelectorAll('.ow-lbl-btn').forEach(btn => {
+            btn.addEventListener('click', () => owSetLabel(card, p, btn.dataset.val));
+        });
+
+        // Preview / record / close / CS2 jump for every moment on this card,
+        // delegated from the card root (static/momentrow.js).
+        MomentRow.wire(card, { matchFile, matchData: window.__matchData || null,
+                               focusPlayer: p.name });
+        // Clips recorded in an earlier session are served straight from disk
+        // (app.py attaches clip_url when the .mp4 exists). They're remembered
+        // here, not shown - the row offers "show clip".
+        MomentRow.primeClips(card, p.moments || [], p.steam_id);
+
+        wrap.appendChild(card);
+    });
+
+    const cheatNote = showCheatCol
+        ? ` Cheater reference baseline: ${data.n_cheat_players} confirmed player(s) - "vs Cheat%" shows percentile in suspicious direction against that pool (≥50th = above cheater median, ≥75th = top quartile).`
+        : ' Label a player as Cheater to build a reference distribution for future comparisons.';
+    document.getElementById('ow-note').innerText =
+        data.baseline_note + ' Flags require ≥' + data.min_kills + ' kills. ' +
+        'Soft cheats need aggregation across many matches of the same player - ' +
+        'a single match is a weak sample by design.' + cheatNote;
+}
+
+function owSetLabel(card, player, val) {
+    // Toggle off if clicking the already-active label.
+    const current = ['clean', 'suspicious', 'cheater', 'professional'].find(v =>
+        card.querySelector(`.ow-lbl-btn[data-val="${v}"]`).classList.contains('active-' + v));
+    const newLabel = current === val ? null : val;
+
+    fetch('/overwatch/label', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            steam_id: player.steam_id,
+            name: player.name,
+            label: newLabel,
+            match: matchFile,
+        }),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (!d.ok) { console.error('label error', d); return; }
+        // Update button states.
+        ['clean', 'suspicious', 'cheater', 'professional'].forEach(v => {
+            const b = card.querySelector(`.ow-lbl-btn[data-val="${v}"]`);
+            b.classList.toggle('active-' + v, d.label === v);
+        });
+        card.className = 'ow-card' + (d.label ? ' labeled-' + d.label : '');
+        // Cache was invalidated server-side; allow tab to re-fetch on next open.
+        if (d.label === 'cheater' || current === 'cheater'
+            || d.label === 'professional' || current === 'professional') owLoaded = false;
+    })
+    .catch(e => console.error('label fetch failed', e));
+}
+
+document.getElementById('ow-pro-match-btn').addEventListener('click', function() {
+    fetch('/overwatch/match-label', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ match: matchFile }),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (!d.ok) { console.error('match-label error', d); return; }
+        this.classList.toggle('active', d.is_pro_match);
+        // Cache was invalidated; reload overwatch data on next tab open.
+        owLoaded = false;
+        loadOverwatch();
+    })
+    .catch(e => console.error('match-label fetch failed', e));
+});
+
+// ── Fetch & render ────────────────────────────────────────────────────────────
+
+fetch('/data/'+matchFile)
+    .then(r=>{ if(!r.ok) throw new Error('Not found'); return r.json(); })
+    // Ensure the (tiny, cached) asset manifest is resolved before the first
+    // scoreboard paint so rankChip() can pick icons over CSS chips; a missing
+    // manifest resolves to false and rankChip falls back cleanly.
+    .then(data => Assets.load().then(() => data))
+    .then(data=>{
+        // Kept around (not re-fetched) so the Overwatch tab's inline clip
+        // preview widget (InstantReplay) can reuse it instead of a second
+        // /data/<match> round trip.
+        window.__matchData = data;
+        RANKS_BY_NAME = {};
+        STEAM_BY_NAME = {};
+        (data.ranks||[]).forEach(r => {
+            if (r.name) RANKS_BY_NAME[r.name.toLowerCase()] = r;
+            if (r.name && r.steam_id) STEAM_BY_NAME[r.name.toLowerCase()] = r.steam_id;
+        });
+
+        // MATCH must be set before computeStats() runs: computeStats() now
+        // groups players by fixed team identity via teamIdOf()/ensureSideMap(),
+        // which reads the module-level MATCH global (memoized on first call).
+        MATCH = data;
+        const stats = computeStats(data);
+        STATS = stats;
+
+        // A ?tab=heatmaps deep link opens that tab before this fetch resolves;
+        // initHeatmaps() recorded the request rather than throwing on a null
+        // MATCH, so honour it now.
+        if (heatPending) initHeatmaps();
+        CHUNK_SOURCE = ChunkSource.create(data);   // v2 binary chunks preferred
+        ROUNDS_BY_NUM = {};
+        stats.rounds.forEach(r => { if (r.round_num != null) ROUNDS_BY_NUM[r.round_num] = r; });
+
+        mapImg = new Image();
+        mapImg.onload = () => {
+            mapImgReady = true;
+            if (lastFrag) drawFrag(lastFrag.players, lastFrag.kill);
+            else drawFragBase();
+        };
+        mapImg.onerror = () => { mapImgReady = false; drawFragBase(); };
+        mapImg.src = MapsLogic.radarUrl(data.mapName);
+
+        // Hero band (map icon/name/mode, avg rank, rounds/kills/dmg pills) -
+        // shared with the viewer / multi-round analyser via static/matchhero.js.
+        const mapRaw = data.mapName||matchFile.replace('.json','');
+        const mode = (matchFile.replace('.json','').split('_').pop())||'';
+        MatchHero.update({
+            mapRaw, mode, ranks: data.ranks, faceitId: data.faceitMatchId,
+            rounds: stats.rounds.length, kills: stats.kills.length,
+            totalDmg: MatchHeroLogic.totalDamage(data.damage),
+        });
+
+        const ctW = {total: stats.ctWins, ctSide: stats.ctCtSide, tSide: stats.ctTSide, result: stats.winner==='ct'?'win':stats.winner==='draw'?'draw':'loss'};
+        const tW  = {total: stats.tWins,  ctSide: stats.tCtSide,  tSide: stats.tTSide,  result: stats.winner==='t'?'win':stats.winner==='draw'?'draw':'loss'};
+
+        // Winner pill - STATS.winner is already fixed-team-identity ('ct' means
+        // "the team that started CT", i.e. Team 1), so it maps straight onto
+        // Team 1/Team 2 with no extra lookup.
+        const heroWinnerEl = document.getElementById('hero-winner');
+        if (stats.winner === 'draw') {
+            heroWinnerEl.textContent = `Draw ${stats.ctWins}-${stats.tWins}`;
+        } else {
+            const winTeam = stats.winner === 'ct' ? 'Team 1' : 'Team 2';
+            const hi = Math.max(stats.ctWins, stats.tWins), lo = Math.min(stats.ctWins, stats.tWins);
+            heroWinnerEl.textContent = `${winTeam} won ${hi}-${lo}`;
+        }
+        heroWinnerEl.style.display = '';
+
+        document.getElementById('sb-ct').innerHTML = renderTeamBlock(stats.team1,1,ctW,sbCols);
+        document.getElementById('sb-t').innerHTML  = renderTeamBlock(stats.team2,2,tW,sbCols);
+
+        renderCombatUtility();
+
+        renderRounds(stats.rounds);
+        renderEconomy(stats.rounds);
+        renderKills(stats.kills);
+
+        document.getElementById('loading-overlay').style.display='none';
+        document.getElementById('match-hero').style.display='';
+        document.getElementById('tab-bar').style.display='';
+        document.getElementById('main-content').style.display='';
+    })
+    .catch(err=>{
+        document.getElementById('loading-overlay').textContent='Failed to load match data.';
+        console.error(err);
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}CS2 Stats{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='fonts.css') }}">
+    <style>
+        :root {
+            --bg:        #07090c;
+            --surface:   #11161f;
+            --panel:     #1a2230;
+            --border:    #2b3648;
+            --border-hi: #3b4a66;
+            --accent:    #00c2ff;
+            --accent2:   #ff6b35;
+            --ct:        #4a9eff;
+            --t:         #ffaa22;
+            --win:       #3ddc84;
+            --loss:      #ff4455;
+            --gold:      #f0b429;
+            --text:      #c8d4e0;
+            /* Secondary/tertiary text. These are TEXT colours, not border
+               colours (--border/--border-hi are those), so they are tuned for
+               how READABLE they are, not for how quiet they look. The values
+               before those (#4a5a70 / #2a3545) came in at 2.8:1 and 1.6:1,
+               which is why every hint, sub-label and caption on the site read
+               as unreadably dark.
+
+               They are tuned against the WHOLE surface ramp, not just --bg -
+               that is what moved --dimmer up from #6b7d95. The lifted surfaces
+               cost secondary text contrast (a caption sits on --panel or
+               --elev, not on the page ground), and at the old value --dimmer
+               measured 3.8:1 on --panel and 3.3:1 on --elev, i.e. under AA on
+               exactly the surfaces it is most often used on. Worst case now:
+               --dim 5.3:1 and --dimmer 4.6:1, both on --elev. If you ever lift
+               the ramp again, re-check these two against the TOP of it. */
+            --dim:       #8fa2ba;
+            --dimmer:    #8695ac;
+            --rail-w:    56px;
+
+            /* ── Surfaces & elevation ────────────────────────────────────
+               --bg / --surface / --panel / --elev is a four-step tonal ramp,
+               and the steps are sized in PERCEIVED lightness (CIELAB L*), not
+               in hex distance. The old ramp stepped ~2.5 L* per surface, at or
+               below the just-noticeable threshold on a ground this dark - so
+               the fills separated nothing and a 1px border was doing 100% of
+               the structural work on all ~100 shells. That is what made the UI
+               read as a grid of cages.
+
+               The ramp now steps ~5-6 L*, which is why a shell can drop its
+               border and still read as a surface. The load-bearing detail: the
+               new --panel sits at L* 13.1, exactly where the OLD --border sat
+               (13.2). A surface is now as visible as the line that used to
+               outline it. --border/--border-hi were lifted to match, or they
+               would have vanished into --panel.
+
+               Re-tune with a colour tool, never by eye: two dark tones can look
+               a step apart and measure identical. */
+            --elev:        #232d3e;   /* floating: popovers, row menus, toasts */
+            --border-soft: #222c3c;   /* a border that recedes behind the fill */
+            --shadow-1:    0 1px 2px rgba(0,0,0,.4);
+            --shadow-2:    0 6px 18px rgba(0,0,0,.5);
+
+            /* ── Radius ──────────────────────────────────────────────────
+               ROLE picks the tier, never size and never the page. Same rule as
+               --font-*: there were 99 hardcoded radii across 9 values, and the
+               number tracked the page rather than the component - a chip was
+               2px on match, 3px on multi and 8px on players; the shared .btn
+               had none at all. Never write a radius literal in a page.
+
+               Exceptions that are NOT this scale: circles stay 50%, full-bleed
+               bands (.hero/.tab-bar/.topbar) stay square, and rankbadge.css
+               stays radius-free because the Premier badge is a parallelogram. */
+            --radius-xs:   3px;    /* data bars, dividers, hairline fills       */
+            --radius-sm:   6px;    /* chips, tags, buttons, inputs, controls    */
+            --radius-md:  10px;    /* cards, panels, rows, popovers             */
+            --radius-lg:  14px;    /* large shells: canvases, outer containers  */
+            --radius-pill: 999px;  /* things already drawn as pills             */
+
+            /* ── Type ────────────────────────────────────────────────────
+               Three roles, one token each. Never write a font-family literal
+               in a page - the stack has to be identical everywhere or the
+               fallback behaviour differs per page, which is how this ended up
+               with three families doing two jobs.
+
+               --font-ui      Archivo. Everything that is words: nav, buttons,
+                              labels, captions, prose.
+               --font-narrow  Archivo Narrow. The same voice, for dense table
+                              text where column width is the constraint.
+               --font-mono    Roboto Mono. ONLY where digits must line up in a
+                              column or hold a fixed width - scores, stats,
+                              timers, tick counts, ratings, file sizes. Using
+                              it for labels too is what made the whole UI read
+                              as a terminal.
+
+               Every stack ends in system-ui on purpose. Archivo and Archivo
+               Narrow are Latin/Latin-Ext only; Steam names carry Cyrillic, CJK
+               and emoji (10% of this corpus), so those characters render in
+               the platform UI face BY DESIGN. Roboto Mono does cover Cyrillic
+               and Greek, so numeric columns stay in one face. */
+            --font-ui:     'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+            --font-narrow: 'Archivo Narrow', 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+            --font-mono:   'Roboto Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        /* Reserve the vertical scrollbar's gutter UNCONDITIONALLY, on every
+           page, whether or not that page currently needs to scroll. Without
+           this, a page's available width silently changes the moment its
+           content crosses the one-screen-tall line: a classic (non-overlay)
+           scrollbar - the Windows/desktop-Chrome default - eats ~15-17px of
+           layout width that nothing on the page accounted for, which reads
+           as a mystery horizontal scrollbar on whichever row is exactly that
+           close to the edge (grids sized with minmax(Npx,1fr), the Overwatch
+           tab's card groups, etc.) - and it can appear or vanish between two
+           otherwise-identical loads of the same page purely because one had
+           a few more pixels of content. Fixing the gutter removes the
+           variable instead of chasing each row it happens to tip over.
+           static/fitview.js's viewer/analyser measurements are unaffected -
+           they read the real DOM after this applies, not an assumed width. */
+        html { scrollbar-gutter: stable; }
+
+        body {
+            font-family: var(--font-ui);
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        /* ── Left icon rail ─────────────────────────────────────────
+           The rail defines its OWN palette (--r-*) instead of using the page
+           :root vars: extending pages (viewer/multi) override --accent/--bg
+           for their content, and the rail must look identical on every page. */
+        .rail {
+            --r-surface:   #0d1117;
+            --r-panel:     #111820;
+            --r-border:    #1a2232;
+            --r-border-hi: #253045;
+            --r-accent:    #00c2ff;
+            --r-text:      #c8d4e0;
+            --r-dim:       #4a5a70;
+            position: fixed;
+            top: 0; left: 0; bottom: 0;
+            width: var(--rail-w);
+            background: var(--r-surface);
+            border-right: 1px solid var(--r-border);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 10px 0;
+            z-index: 300;
+            font-family: var(--font-ui);
+        }
+        .rail-logo {
+            width: 26px; height: 26px;
+            display: flex; align-items: center; justify-content: center;
+            margin-bottom: 14px;
+            flex-shrink: 0;
+        }
+        .rail-logo::after {
+            content: ''; width: 6px; height: 22px; background: var(--r-accent); display: block;
+            border-radius: var(--radius-xs);
+        }
+        .rail-items { display: flex; flex-direction: column; gap: 4px; width: 100%; align-items: center; }
+        .rail-spacer { flex: 1; }
+        .rail-item {
+            position: relative;
+            width: 40px; height: 40px;
+            display: flex; align-items: center; justify-content: center;
+            color: var(--r-dim);
+            text-decoration: none;
+            transition: color .15s, background .15s;
+            border-left: 2px solid transparent;
+        }
+        .rail-item svg { width: 21px; height: 21px; stroke: currentColor; fill: none; stroke-width: 1.7; }
+        .rail-item:hover { color: var(--r-text); background: rgba(255,255,255,.03); }
+        .rail-item.active { color: var(--r-accent); border-left-color: var(--r-accent); background: rgba(0,194,255,.06); }
+        /* Tooltip label on hover */
+        .rail-item::after {
+            content: attr(data-label);
+            position: absolute; left: calc(100% + 8px); top: 50%; transform: translateY(-50%);
+            background: var(--r-panel); border: 1px solid var(--r-border-hi); color: var(--r-text);
+            border-radius: var(--radius-sm); box-shadow: var(--shadow-1);
+            font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; font-weight: 700;
+            padding: 4px 9px; white-space: nowrap; opacity: 0; pointer-events: none;
+            transition: opacity .12s; z-index: 400;
+        }
+        .rail-item:hover::after { opacity: 1; }
+
+        /* ── Match context group: the open match's actions (Stats / Replay /
+           Analyse this match). That last one is the MATCH-scoped twin of the
+           global "Match Analyser" in the nav above - same page, different
+           scope, which is why they carry different labels and different
+           nav_active keys ('multi' vs 'analyser').
+           Only rendered when a match is open - boxed and
+           accent-tinted so it visibly belongs to the match, not global nav. ── */
+        .rail-ctx {
+            margin-top: 14px;
+            width: 44px;
+            display: flex; flex-direction: column; align-items: center;
+            padding: 5px 0 4px;
+            gap: 2px;
+            background: rgba(0,194,255,.05);
+            border: 1px solid rgba(0,194,255,.22);
+            border-radius: var(--radius-md);
+        }
+        .rail-ctx-label {
+            font-size: 8px; font-weight: 700; letter-spacing: 1.5px;
+            text-transform: uppercase; color: var(--r-accent);
+            margin-bottom: 3px; opacity: .85;
+        }
+        .rail-ctx .rail-item { width: 34px; height: 34px; border-left: none; border-radius: var(--radius-sm); }
+        .rail-ctx .rail-item svg { width: 19px; height: 19px; }
+        .rail-ctx .rail-item.active { background: rgba(0,194,255,.16); color: var(--r-accent); }
+
+        .app-content { margin-left: var(--rail-w); min-height: 100vh; }
+
+        /* ── Shared buttons ── */
+        .btn {
+            background: var(--accent); border: none; color: #000;
+            border-radius: var(--radius-sm);
+            padding: 8px 20px; font-family: var(--font-ui);
+            font-weight: 700; font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
+            cursor: pointer; transition: filter 0.15s; white-space: nowrap;
+        }
+        .btn:hover { filter: brightness(1.15); }
+        .btn-ghost {
+            background: transparent; border: 1px solid var(--border); color: var(--text);
+            border-radius: var(--radius-sm);
+            padding: 8px 20px; font-family: var(--font-ui);
+            font-weight: 700; font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
+            cursor: pointer; transition: border-color 0.15s, color 0.15s;
+            text-decoration: none; display: inline-flex; align-items: center;
+        }
+        .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+        /* ── Responsive: rail collapses to a top bar under 950px (repo rule) ── */
+        @media (max-width: 950px) {
+            /* Rail is a top bar now, not a left column - zero the width var so
+               page-level `calc(100vw - var(--rail-w))` layouts use the full width. */
+            :root { --rail-w: 0px; }
+            .rail {
+                flex-direction: row; top: 0; left: 0; right: 0; bottom: auto;
+                width: auto; height: 48px; padding: 0 10px;
+                border-right: none; border-bottom: 1px solid var(--border);
+            }
+            .rail-logo { margin: 0 8px 0 0; }
+            .rail-items { flex-direction: row; width: auto; gap: 2px; }
+            .rail-spacer { flex: 1; }
+            .rail-item { border-left: none; border-bottom: 2px solid transparent; height: 48px; }
+            .rail-item.active { border-left: none; border-bottom-color: var(--r-accent); }
+            .rail-item::after { left: 50%; top: calc(100% + 4px); transform: translateX(-50%); }
+            .rail-ctx {
+                flex-direction: row; align-items: center;
+                margin: 0 0 0 12px; width: auto; padding: 2px 7px; gap: 2px;
+            }
+            .rail-ctx-label { margin: 0 5px 0 0; }
+            .rail-ctx .rail-item { height: 32px; width: 32px; border-bottom: none; }
+            .app-content { margin-left: 0; padding-top: 48px; }
+        }
+    </style>
+    {# How a CS2 rank looks wherever one is shown; see the file's own header.
+       Linked before each page's own head block so a page can still override. #}
+    <link rel="stylesheet" href="{{ url_for('static', filename='rankbadge.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='momentrow.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+
+<aside class="rail">
+    <div class="rail-logo" title="CS2 Stats"></div>
+    <div class="rail-items" role="navigation">
+        <a class="rail-item {% if nav_active == 'matches' %}active{% endif %}" data-nav="matches"
+           href="/" data-label="Matches" title="Matches">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4"/><rect x="3" y="10" width="18" height="4"/><rect x="3" y="16" width="18" height="4"/></svg>
+        </a>
+        <a class="rail-item {% if nav_active == 'analyser' %}active{% endif %}" data-nav="analyser"
+           id="rail-analyser" href="/multi?scope=all"
+           data-label="Match Analyser" title="Match Analyser - query every match">
+            <svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="10" height="10" rx="1.5"/><rect x="10.5" y="10.5" width="10" height="10" rx="1.5"/><path d="M13.5 8.2h3.2M8.2 13.5v3.2"/></svg>
+        </a>
+        <a class="rail-item {% if nav_active == 'players' %}active{% endif %}" data-nav="players"
+           href="/players" data-label="Players" title="Players">
+            <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c0-3.3 2.5-5.5 5.5-5.5s5.5 2.2 5.5 5.5"/><path d="M16 5.2a3 3 0 0 1 0 5.8"/><path d="M17 14.6c2.3.5 4 2.6 4 5.4"/></svg>
+        </a>
+        <a class="rail-item {% if nav_active == 'overwatch' %}active{% endif %}" data-nav="overwatch"
+           href="/overwatch/dashboard" data-label="Overwatch" title="Overwatch">
+            <svg viewBox="0 0 24 24"><path d="M12 2.5 20 5.5v6.5c0 4.6-3.3 8-8 9.5-4.7-1.5-8-4.9-8-9.5V5.5z"/><circle cx="12" cy="11" r="3"/></svg>
+        </a>
+    </div>
+    {# `match_ctx_dynamic` (the analyser) renders this group even with no match
+       in the URL: the page can put one in focus after load, and the group then
+       follows the focus rather than the address the page was opened at. #}
+    {% if match_file or match_ctx_dynamic %}
+    <div class="rail-ctx" role="navigation" id="rail-ctx"
+         {% if not match_file %}style="display:none"{% endif %}>
+        <span class="rail-ctx-label">Match</span>
+        <a class="rail-item {% if nav_active == 'match' %}active{% endif %}" id="rail-ctx-stats"
+           href="/match?match={{ match_file }}" data-label="Match Stats" title="Match Stats">
+            <svg viewBox="0 0 24 24"><path d="M5 20v-8M11 20V5M17 20v-11M2.5 20h19"/></svg>
+        </a>
+        <a class="rail-item {% if nav_active == 'viewer' %}active{% endif %}" id="rail-ctx-viewer"
+           href="/viewer?match={{ match_file }}" data-label="2D Replay" title="2D Replay">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polygon points="10,8.5 16.5,12 10,15.5"/></svg>
+        </a>
+        <a class="rail-item {% if nav_active == 'multi' %}active{% endif %}" id="rail-ctx-multi"
+           href="/multi?match={{ match_file }}" data-label="Analyse this match" title="Analyse this match">
+            <svg viewBox="0 0 24 24"><polygon points="12,3 21,8 12,13 3,8"/><polyline points="3,13 12,18 21,13"/><polyline points="3,17 12,22 21,17" opacity=".45"/></svg>
+        </a>
+    </div>
+    {% endif %}
+    <div class="rail-spacer"></div>
+    <div class="rail-items" style="flex:0" role="navigation">
+        <a class="rail-item {% if nav_active == 'settings' %}active{% endif %}" data-nav="settings"
+           href="/settings" data-label="Settings" title="Settings">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2l-2.1 2.1M7.3 16.7l-2.1 2.1"/></svg>
+        </a>
+    </div>
+</aside>
+
+<div class="app-content">
+{% block content %}{% endblock %}
+</div>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

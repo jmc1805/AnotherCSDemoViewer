@@ -1,0 +1,217 @@
+/* momentrow.css - the one design for a "moment": the row itself, and the two
+   media boxes that open under it.
+ *
+ * This block used to exist as three drifted copies (templates/match.html,
+ * templates/player.html, templates/overwatch.html) of what is one component
+ * built by three shared modules - static/momentrow.{logic.,}js for the row,
+ * static/instantreplay.js for the 2D preview, static/clipbox.js for the
+ * recorded in-game clip. The copies disagreed on colours (the player page's
+ * multi-kill chip was --gold with a solid border, the match page's was
+ * #f0b429 with a translucent one), on which text was --dim vs --dimmer, and
+ * on the box shells. Loaded from _shell.html ahead of each page's own <style>
+ * block, so a page can still override a single value - overwatch.html's
+ * smaller preview does exactly that by re-declaring --clip-w/--clip-h.
+ *
+ * THE TWO BOXES ARE ONE DESIGN. .instant-replay (2D replay) and .clip-box
+ * (real footage) sit side by side under the same row, so they share a shell:
+ * same width (derived from --clip-w so the media inside lines up), same
+ * padding, border, radius and gap, and the same uppercase head row with a
+ * coloured dot. Their inner content differs - the 2D preview carries its own
+ * transport controls, the clip leans on the <video> element's - which is why
+ * the flex container stretches (align-items:stretch) instead of top-aligning:
+ * whichever box is taller sets the height and both draw the same box. The
+ * captions are pinned to the bottom (margin-top:auto) so the slack lands in
+ * one place rather than between the media and its caption. */
+
+/* ── The row ───────────────────────────────────────────────────────────── */
+/* ONE PROPERTY SIZES THE WHOLE ROW. --mr-fs is the row's font size and every
+   part inside it is expressed in em, so a surface that needs bigger rows sets
+   --mr-fs on any ancestor and the chip, the round tag, the match name and the
+   links all follow in proportion - the same trick rankbadge.css plays with
+   --rank-badge-h, and for the same reason: a component that half-scales looks
+   broken. The analyser's results band (templates/multi.html #q-results) is the
+   surface that asked for it; a dense reel like the player page keeps 11px.
+
+   The row has NO border: it always sits on a page surface one step darker in
+   the ramp, so its own fill separates it (see the surfaces note in
+   _shell.html). It used to carry a 1px border AND a near-identical fill, which
+   is double-drawing the same edge - and in a reel of twenty rows that reads as
+   a stack of boxes rather than a list. The media boxes below do keep a border,
+   because they are top-level boxes rather than list items. */
+.ow-moment,
+.hl-row {
+    display: flex; gap: .9em; align-items: center; flex-wrap: wrap;
+    font-family: var(--font-narrow); font-size: var(--mr-fs, 11px);
+    padding: .5em .9em;
+    background: var(--panel, var(--surface));
+    border-radius: var(--radius-md);
+}
+.ow-moment .m-round,  .hl-row .m-round  { color: var(--dimmer); min-width: 2.6em; font-size: .9em; }
+.ow-moment .m-label,  .hl-row .m-label  { color: var(--text);   min-width: 8.2em; }
+.ow-moment .m-detail, .hl-row .m-detail { color: var(--dim);    flex: 1; min-width: 0; }
+.ow-moment .m-match,  .hl-row .m-match  { color: var(--dimmer); font-size: .9em; white-space: nowrap; }
+/* Name is tinted by FIXED team identity (team 1 = first-half CT), not the side
+   the player happens to be on that round - same convention as the viewer's
+   team panels, so one team keeps one colour all match. */
+.ow-moment .m-player, .hl-row .m-player {
+    min-width: 10em; font-weight: 700; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ow-moment .m-player.team1, .hl-row .m-player.team1 { color: var(--ct); }
+.ow-moment .m-player.team2, .hl-row .m-player.team2 { color: var(--t); }
+.ow-moment a, .hl-row a { color: var(--accent); text-decoration: none; white-space: nowrap; font-size: .9em; }
+.ow-moment a:hover, .hl-row a:hover { text-decoration: underline; }
+
+.hl-item[hidden] { display: none; }
+
+/* The second player. `.m-player` carries min-width: 10em, so a second one of
+   those would eat the label and detail columns - these are shrink-to-fit and
+   carry only the relation word plus the name. Tinted by FIXED team identity
+   like the subject, so teammate vs opponent is a colour, not a preposition you
+   have to read. */
+.ow-moment .m-with, .hl-row .m-with,
+.ow-moment .m-other, .hl-row .m-other {
+    color: var(--dimmer); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; max-width: 11em;
+}
+.ow-moment .m-with b, .hl-row .m-with b,
+.ow-moment .m-other b, .hl-row .m-other b { font-weight: 700; color: var(--text); }
+.ow-moment .m-with .team1, .hl-row .m-with .team1,
+.ow-moment .m-other .team1, .hl-row .m-other .team1 { color: var(--ct); }
+.ow-moment .m-with .team2, .hl-row .m-with .team2,
+.ow-moment .m-other .team2, .hl-row .m-other .team2 { color: var(--t); }
+
+/* Moment-kind chip. One palette for every surface that shows moments. */
+.hl-type {
+    font-family: var(--font-ui); font-size: .82em; letter-spacing: 1px;
+    text-transform: uppercase; padding: .25em .55em;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    color: var(--dim); white-space: nowrap; min-width: 6.6em; text-align: center;
+}
+.hl-type.clutch     { color: var(--win); border-color: rgba(61,220,132,.5); }
+.hl-type.multikill  { color: #f0b429;    border-color: rgba(240,180,41,.5); }
+.hl-type.impact_kill { color: var(--accent); border-color: rgba(0,194,255,.45); }
+/* The analyser materialises a kill twice - once from the attacker's side and
+   once from the victim's - so "death" is a moment kind here, not a failure. */
+.hl-type.death      { color: #ff7a7a;    border-color: rgba(255,122,122,.45); }
+/* Teamplay kinds - moments two players made together, so they share a palette
+   distinct from the single-player ones above. */
+.hl-type.trade      { color: #7ad1ff;    border-color: rgba(122,209,255,.45); }
+.hl-type.support    { color: #b58cff;    border-color: rgba(181,140,255,.45); }
+.hl-type.execute    { color: #ffa64d;    border-color: rgba(255,166,77,.5); }
+.hl-type.crossfire  { color: #5fd0c0;    border-color: rgba(95,208,192,.45); }
+
+/* ── Row buttons ───────────────────────────────────────────────────────── */
+.ir-toggle,
+.clip-record-btn,
+.clip-close-btn,
+.mr-overlay-btn {
+    font-family: var(--font-ui); font-size: .9em;
+    background: none; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: .25em .6em; cursor: pointer; white-space: nowrap;
+}
+.ir-toggle { color: var(--accent); }
+.ir-toggle:hover { border-color: var(--accent); }
+.clip-record-btn, .clip-close-btn, .mr-overlay-btn { color: var(--dim); }
+.clip-record-btn:hover, .mr-overlay-btn:hover { border-color: var(--accent); color: var(--text); }
+.clip-record-btn:disabled, .mr-overlay-btn:disabled { opacity: .5; cursor: default; }
+/* A recorded clip shorter than the tick window it is filed under. The pair of
+   media boxes only means anything if both show the same moment at the same
+   length, so the mismatch is visible on the row before the box is opened -
+   the box itself then spells out the numbers (momentrow.js shortWarning). */
+.clip-record-btn.clip-short { color: var(--gold, #f0b429); border-color: rgba(240,180,41,.5); }
+/* Drawn here rather than written into the label, because ClipBox rewrites this
+   button's text on prime/show/close - a ⚠ in the text would vanish on the
+   first click. The class is set once by rowHtml and cleared only by a
+   successful re-record. */
+.clip-record-btn.clip-short::after { content: " ⚠"; }
+.clip-close-btn:hover { color: var(--loss); border-color: var(--loss); }
+
+/* ── The media strip under a row ───────────────────────────────────────── */
+.ow-media, .hl-media {
+    --clip-w: 360px; --clip-h: 203px;
+    display: flex; flex-wrap: wrap; gap: 10px;
+    align-items: stretch;              /* see header note: both boxes, one height */
+    margin: 6px 0 2px;
+}
+.ow-media:empty, .hl-media:empty { display: none; }
+.ir-mount { margin: 0; }
+.clip-record-result { margin: 0; }
+.clip-record-result:empty { display: none; }
+.clip-err { color: var(--loss); }
+
+/* ── The shared box shell ──────────────────────────────────────────────── */
+.instant-replay, .clip-box {
+    display: flex; flex-direction: column; gap: 6px;
+    background: var(--panel, var(--surface));
+    border: 1px solid var(--border-soft); border-radius: var(--radius-md);
+    padding: 8px;
+    box-sizing: border-box;
+    /* padding 8×2 + border 1×2 - so the media inside is exactly --clip-w and
+       the two boxes are the same width whatever they contain. */
+    width: calc(var(--clip-w, 220px) + 18px);
+    max-width: 100%;
+}
+.ir-head, .clip-box-head {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-ui); font-size: 10px;
+    letter-spacing: 1px; text-transform: uppercase; color: var(--dim);
+    min-height: 14px;
+}
+.ir-head .dot, .clip-box-head .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.ir-head .dot      { background: var(--accent); }   /* reconstructed from tick data */
+.clip-box-head .dot { background: var(--loss); }    /* real recorded footage */
+.clip-saved { color: var(--win); }
+
+.ir-canvas, .clip-video {
+    display: block;
+    width: var(--clip-w, 220px); height: var(--clip-h, 220px);
+    max-width: 100%; background: var(--bg); border-radius: var(--radius-sm);
+}
+.clip-video { object-fit: contain; }
+
+.ir-controls { display: flex; align-items: center; gap: 8px; }
+.ir-btn {
+    font-family: var(--font-ui); font-size: 12px; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    width: 26px; height: 22px; cursor: pointer;
+}
+.ir-btn:hover { border-color: var(--accent); }
+.ir-status { font-family: var(--font-ui); font-size: 10px; color: var(--dim); }
+
+.ir-caption, .clip-caption {
+    font-family: var(--font-ui); font-size: 10px; color: var(--dim);
+    max-width: var(--clip-w, 220px);
+    margin-top: auto;                  /* pin to the bottom of a stretched box */
+}
+.clip-warn {
+    max-width: var(--clip-w, 360px);
+    font-family: var(--font-ui); font-size: 10px;
+    color: var(--gold, #f0b429); background: rgba(240,180,41,.08);
+    border: 1px solid var(--gold, #f0b429); border-radius: var(--radius-sm); padding: 4px 6px;
+}
+
+/* ── Narrow windows ───────────────────────────────────────────────────────
+   LAST IN THE FILE ON PURPOSE. A media query adds no specificity, so these
+   releases have to come after every base rule they undo - `.hl-type`'s 6.6em
+   and `.m-with`'s 11em are declared further up, and an earlier @media simply
+   lost to them.
+
+   The min-widths above are column guides that keep a list of rows aligned
+   down the page. Below ~700px they stop guiding and start acting as a floor:
+   flex-wrap moves an item to the next line, but nothing makes an item
+   narrower than its own min-width, so the row pushed the whole page sideways
+   instead of stacking. Released here - the row still reads, because it was
+   always a wrapping flex row; it just stops pretending to be a table on a
+   screen with no room for one. */
+@media (max-width: 700px) {
+    .ow-moment .m-round,  .hl-row .m-round,
+    .ow-moment .m-label,  .hl-row .m-label,
+    .ow-moment .m-player, .hl-row .m-player,
+    .hl-type { min-width: 0; }
+    .ow-moment .m-match, .hl-row .m-match {
+        max-width: 10em; overflow: hidden; text-overflow: ellipsis;
+    }
+    .ow-moment .m-with, .hl-row .m-with,
+    .ow-moment .m-other, .hl-row .m-other { max-width: 8em; }
+}

@@ -1,0 +1,66 @@
+# ── Compiled Go binaries (bin/ - docs/data_layout.md) ─────────────────────────
+/bin/
+# legacy locations (pre-restructure builds dropped binaries at the repo root)
+/parser
+/overwatch
+parser.exe
+overwatch.exe
+
+# ── Python / Flask ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.spike-venv/
+.desktop-venv/
+venv/
+env/
+.Python
+instance/
+.webassets-cache
+.claude/
+
+# ── All generated/runtime data lives under data/ (docs/data_layout.md) ────────
+# = the default CS2VIEWER_DATA_DIR: demos, processed_matches, chunks,
+# overwatch_raw, analysis_data, demo_map.json. One line covers all of it.
+/data/
+*.dem
+
+# ── Valve-derived assets - source locally yourself, never commit/redistribute ─
+# 2D radar overview images, one per map (manually sourced - see README
+# "Supported Maps"); deliberately not shipped in the repo for copyright reasons.
+static/map/
+# CS2 UI image assets (skill-group / map / overhead / equipment icons) extracted
+# from csgo/pak_01_dir.vpk by tools/extract_ui_assets.* - Valve content, sourced
+# locally; presence gates the icon features (docs/ui_feature_expansion_plan.md §1).
+static/assets/
+
+# ── tools/ node helpers (extract_map_calibration.mjs) ─────────────────────────
+tools/node_modules/
+tools/work/
+tools/package-lock.json
+
+# ── Desktop build output (tools/build_desktop.py) ─────────────────────────────
+/build/
+/dist/
+
+# ── Parser test artifacts ─────────────────────────────────────────────────────
+test_out.json
+test_chunks/
+
+# ── HLTV rating notebook (notebooks/) ──────────────────────────────────────────
+# Downloaded pro demos + their parsed JSON + scraped label tables - kept out of
+# data/ so they never show up in the live app's match list.
+notebooks/hltv_data/
+.ipynb_checkpoints/
+
+# ── Editor / OS cruft ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Screenshots written by tools/smoke_pages.py --shot-dir
+shots/

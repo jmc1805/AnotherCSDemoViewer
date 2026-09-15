@@ -1,0 +1,1113 @@
+{% extends "_shell.html" %}
+{% block title %}CS2 Multi Round Analyser{% endblock %}
+{% block head %}
+    <style>
+        /* This page keeps a deliberate theme of its own - a blue --accent
+           instead of the shell's cyan, plus --text-dim, which only the two
+           canvas pages use. It must NOT fork the surface ramp: those tokens
+           are tuned as a set (see _shell.html), so a stale copy here would
+           leave the replayer and the analyser flat while every other page
+           got the lift. Colours that are genuinely this page's identity
+           belong here; the ramp is the shell's. */
+        :root {
+            --ct: #4a9eff; --t: #ffaa22; --text: #c8d0dc; --text-dim: #8a9ab0;
+            --accent: #4a9eff;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--bg); color: var(--text); font-family: var(--font-ui);
+            min-height: 100vh;
+        }
+        /* Rail shell hosts page content in .app-content - re-apply the column
+           centering this page used to do on <body>. */
+        .app-content { display: flex; flex-direction: column; align-items: center; }
+        a { color: inherit; text-decoration: none; }
+
+        /* Hero band - copied verbatim from the stats page (templates/match.html
+           .hero rules) so the map icon/name, avg-rank pill and meta-pills are
+           pixel-identical across pages, not just similar. Full-bleed (no
+           max-width), lighter --surface tone lifts it off the page background.
+           Map icon/name/mode on the left, the live overlay readout (#meta)
+           next to it, running match totals (avg rank / rounds / kills / dmg
+           across every loaded match, static/matchhero.js) pushed right. */
+        header.hero {
+            width: 100%; display: flex; align-items: center;
+            gap: 32px; flex-wrap: wrap; padding: 22px 32px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border); margin-bottom: 14px;
+        }
+        .hero-map { background: var(--panel); border-radius: var(--radius-md); padding: 10px 18px; }
+        .hero-map-ico { height: 44px; width: auto; display: block; margin-bottom: 6px; }
+        .hero-map-name { font-size: 28px; font-weight: 800; letter-spacing: 2px; text-transform: uppercase; color: white; line-height: 1; }
+        .hero-map-sub  { font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: var(--dim); margin-top: 3px; }
+        .hero-pills { display: flex; flex-direction: column; gap: 5px; margin-left: auto; }
+        .meta-pill { font-family: var(--font-mono); font-size: 11px; letter-spacing: 1px; color: var(--dim); background: var(--panel); border-radius: var(--radius-sm); padding: 3px 10px; }
+        #hero-rank { display: flex; align-items: center; gap: 8px; --rank-badge-h: 26px; }
+        #hero-rank .hero-rank-cap { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); }
+
+        /* The page's name, at the head of the live readout - the replayer's
+           rule. It used to be an <h1> above the canvas, a 32px row of map. */
+        .hero-page {
+            font-size: 11px; font-weight: 800; letter-spacing: 3px;
+            text-transform: uppercase; color: var(--text); white-space: nowrap;
+            padding-right: 12px; margin-right: 4px; border-right: 1px solid var(--border);
+        }
+
+        /* Section title - same as the stats page's .section-title (e.g.
+           "Map Situation" above the frag-replay canvas): a small dim uppercase
+           label with a light rule under it, sized to the column it labels
+           rather than the full page. Used here for the Results heading. */
+        .section-title {
+            font-size: 10px; font-weight: 700; letter-spacing: 3px;
+            text-transform: uppercase; color: var(--dim);
+            padding-bottom: 8px; margin-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        /* Live overlay readout (round-time / selected rounds+players) - same
+           .meta-pill styling as the match-summary pills so the whole hero band
+           reads as one component; these two just update as selections change
+           instead of once on load. */
+        #meta { display: flex; gap: 8px; align-items: center; }
+        #meta .meta-pill span { color: var(--text); }
+
+        /* .main-layout stretches its columns (map / #side) to equal height so the
+           4 panels (Map/Rounds/Player/Display) read as peer boxes rather than the
+           sidebar just trailing off shorter or longer than the canvas. */
+        .main-layout { display: flex; gap: 14px; align-items: stretch; width: 100%; max-width: 1320px; padding: 0 12px; }
+
+        /* The canvas is sized by its COLUMN, never by a viewport expression.
+           It used to be `calc(100vw - 380px - var(--rail-w))` - the sidebar's
+           width hardcoded into the map's - so a quarter-width window asked for
+           a canvas narrower than the rounding error. Flex already knows what is
+           left after the sidebar; the max-width is only a ceiling. */
+        /* NO `calc(100vh - N)` guard here, unlike the replayer. That guard buys
+           "the playback controls are still on screen" and pays for it in map,
+           and on this page it now costs twice: the control panel is exactly as
+           tall as the map column (see #side), so a shorter map is also a
+           shorter panel and more scrolling inside it. Flex hands the map
+           whatever the sidebar does not take; 860px is only a ceiling. */
+        .map-col { flex: 1 1 auto; min-width: 0; max-width: 860px; }
+        /* Map panel - same .panel card treatment as Rounds/Player/Display below,
+           for visual consistency as one of 4 peer panels. */
+        .map-col .panel { display: block; }
+        #map-wrap { position: relative; }
+        canvas {
+            display: block; border: 1px solid var(--border-soft); background: var(--bg);
+            border-radius: var(--radius-lg);
+            width: 100%;
+            aspect-ratio: 1 / 1; height: auto;
+        }
+        #loading {
+            position: absolute; inset: 0; background: rgba(10,12,15,0.92); display: flex;
+            border-radius: var(--radius-lg);   /* matches the canvas it covers */
+            align-items: center; justify-content: center; font-size: 16px; letter-spacing: 3px;
+            color: var(--text-dim); text-transform: uppercase;
+        }
+
+        /* Control sidebar - one panel beside the map holding a tab bar
+           (Find / Rounds / Player / Display); only the active tab's content
+           shows.
+
+           IT IS EXACTLY AS TALL AS THE MAP COLUMN, and the trick is that its
+           panel is absolutely positioned. A flex line's height is the tallest
+           item's, so a sidebar whose content is 1300px tall simply made the
+           line 1300px and left half a screen of nothing beside the map. With
+           `position: absolute` the panel is out of flow, so #side contributes
+           ZERO to the line, the line is sized by .map-col alone, and
+           `align-items: stretch` hands that height back to #side for the panel
+           to fill. No magic number, no JS, and it tracks every change to the
+           canvas's own sizing for free.
+
+           ONE SCROLLER PER TAB, and it is the whole tab. A fixed height means
+           the content has to scroll somewhere; scrolling only `.panel-body`
+           (as this did originally) pins `.q-fixed` - 418px of unit, presets and
+           player picker - at the top and leaves the facet list 100px to live in
+           on a short window. Scrolling the tab as a unit means everything in it
+           is reachable at every size. */
+        #side {
+            /* A share of the row, not a greedy `flex: 1`. Both columns being
+               growable made the split depend on which hit its max first, and
+               at 1280 the map won the lot and squeezed this to its 300px
+               minimum - where #q-facets drops to a single column and the tab
+               scrolls twice as far. A percentage keeps the two columns in
+               proportion at every width, and the clamp keeps the facet list
+               above its two-column threshold wherever there is room for it. */
+            flex: 0 0 clamp(320px, 34%, 460px);
+            position: relative;
+        }
+        #side > .panel { position: absolute; inset: 0; }
+        #side .tab-panel { overflow-y: auto; }
+        #side .panel-body { flex: 0 0 auto; }
+
+        /* ── The tab scroller's own bar ───────────────────────────────────
+           A fixed-height panel means one visible scrollbar, and the platform
+           default is a wide light-grey gutter with arrow buttons: on a dark
+           card it reads as a seam down the edge rather than as a control, and
+           it is the widest thing in a 400px column carrying no information at
+           all. This is the same bar in the panel's own palette - a thin thumb
+           in the border tone on no track, lifting toward the accent while the
+           pointer is in the panel.
+
+           THE STANDARD PROPERTIES ARE THE PRIMARY STYLING, and the @supports
+           block below is a fallback, not a belt-and-braces duplicate. Since
+           Chrome 121, setting `scrollbar-width` or `scrollbar-color` to
+           anything but `auto` makes that element's `::-webkit-scrollbar` rules
+           be IGNORED - so writing both unprefixed and prefixed rules for one
+           element does not "cover more browsers", it just means the prefixed
+           half is dead everywhere it would have mattered. Don't delete the
+           standard pair to "make the webkit rules work"; that trades every
+           Firefox and modern-Chromium user for a slightly rounder thumb.
+
+           `scrollbar-gutter: stable` is the load-bearing line. Only the Find
+           tab overruns the panel's height; without a reserved gutter the other
+           three tabs are ~10px wider and every tab switch nudges the column's
+           contents sideways. */
+        #side .tab-panel {
+            scrollbar-width: thin;
+            scrollbar-color: var(--border-hi) transparent;
+            scrollbar-gutter: stable;
+        }
+        #side .tab-panel:hover {
+            scrollbar-color: color-mix(in srgb, var(--accent) 45%, var(--border-hi)) transparent;
+        }
+
+        /* Safari and pre-121 Chromium, which have no standard properties to
+           honour. The transparent border plus `background-clip: padding-box`
+           is what insets the pill off the panel edge - a thumb drawn flush
+           into the corner radius reads as a crack in the card. */
+        @supports not (scrollbar-color: red transparent) {
+            #side .tab-panel::-webkit-scrollbar { width: 9px; }
+            #side .tab-panel::-webkit-scrollbar-track { background: transparent; }
+            #side .tab-panel::-webkit-scrollbar-thumb {
+                background: var(--border-hi);
+                border: 2px solid transparent;
+                background-clip: padding-box;
+                border-radius: var(--radius-pill);
+            }
+            #side .tab-panel::-webkit-scrollbar-thumb:hover {
+                background: var(--accent);
+                background-clip: padding-box;
+            }
+        }
+        /* overflow:hidden is load-bearing with the radius: .tab-bar below
+           bleeds to the panel's edges via margin:-12px -14px, so without the
+           clip its border-bottom runs straight through the rounded corner. */
+        .panel {
+            background: var(--panel); border: 1px solid var(--border-soft); padding: 12px 14px;
+            border-radius: var(--radius-lg); overflow: hidden;
+            display: flex; flex-direction: column; min-height: 0;
+        }
+        #side .panel { flex: 1 1 auto; overflow: hidden; }
+        /* Tab bar - same look/behaviour as the stats page's .tab-bar/.tab-btn,
+           scaled down for the sidebar's width. Only one .tab-panel shows at a
+           time (display:none by default, .active switches to flex-column so
+           each tab can host its own pinned header + scrollable body). */
+        .tab-bar { display: flex; flex: 0 0 auto; gap: 4px; margin: -12px -14px 10px; padding: 0 6px; border-bottom: 1px solid var(--border); }
+        .tab-btn {
+            font-size: 10px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+            color: var(--text-dim); background: transparent; border: none;
+            border-bottom: 2px solid transparent; padding: 9px 10px 8px;
+            cursor: pointer; transition: color .15s, border-color .15s; white-space: nowrap;
+        }
+        .tab-btn:hover { color: var(--text); }
+        .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+        .tab-panel { display: none; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+        .tab-panel.active { display: flex; }
+        /* The tab's content area. It used to scroll internally against a
+           fixed-height #side; see the NOTHING INSIDE IT SCROLLS note there. */
+        .panel-body { flex: 1 1 auto; min-height: 0; }
+        /* Wraps as whole items. Without flex-wrap the three parts of the Rounds
+           title shrink instead, and each one breaks mid-phrase ("CLICK A ROUND
+           TO / OVERLAY" beside "CLEAR / ALL") - three ragged two-line stubs
+           where one clean second line reads better. */
+        .panel-title {
+            flex: 0 0 auto;
+            font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: var(--text-dim);
+            margin-bottom: 9px; display: flex; align-items: center; justify-content: space-between;
+            flex-wrap: wrap; gap: 4px 10px;
+        }
+        .mini { font-size: 11px; letter-spacing: 1px; color: var(--text-dim); cursor: pointer; padding: 2px 7px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+        .mini:hover { color: var(--accent); border-color: var(--accent); }
+        /* A .mini that is a toggle rather than an action reads its state the
+           same way the facet buttons do. */
+        .mini.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+        .mini-group { display: flex; gap: 5px; }
+
+        /* Match sections (one collapsible round grid per match) */
+        /* overflow:hidden is load-bearing at this radius: .match-head paints a
+           full-bleed hover background and would square off the top corners. */
+        .match-sec { border: 1px solid var(--border-soft); border-radius: var(--radius-md);
+                     margin-bottom: 6px; overflow: hidden; }
+        .match-sec:last-child { margin-bottom: 0; }
+        .match-head {
+            display: flex; align-items: center; gap: 8px; padding: 7px 9px;
+            cursor: pointer; user-select: none; transition: background .12s;
+        }
+        .match-head:hover { background: rgba(255,255,255,.03); }
+        .mtag {
+            font-family: var(--font-ui); font-size: 10px; font-weight: 700;
+            padding: 1px 6px; border-radius: var(--radius-sm); color: var(--bg); background: var(--mc, var(--accent));
+        }
+        .mlabel { font-family: var(--font-ui); font-size: 11px; color: var(--text); }
+        .mmode  { font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: var(--text-dim); }
+        .mscore { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
+        .mscore .ct { color: var(--ct); } .mscore .t { color: var(--t); }
+        .mcount { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--accent); }
+        .chev   { color: var(--text-dim); font-size: 11px; }
+        .match-body { padding: 0 9px 9px; }
+
+        /* Per-match additive round filters (T1/T2 CT/T-wins) - persistent
+           checkbox state (select-all semantics), not momentary chip actions. */
+        .rfilters { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-bottom: 8px; font-size: 10px; }
+
+        /* Round grid - icon-forward: win-condition icon dominant, round number a
+           corner badge, winner side a colored top bar + small corner letter
+           (same visual language as the 2D replayer and Rounds & Kills pills). */
+        .round-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
+        .rbtn {
+            --rc: transparent; --wc: transparent;
+            position: relative; overflow: hidden;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            aspect-ratio: 1; padding: 0; background: var(--bg); border: 1px solid var(--border);
+            border-radius: var(--radius-sm); cursor: pointer; font-family: var(--font-mono); line-height: 1;
+            transition: border-color .12s, background .12s;
+        }
+        .rbtn::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--wc); opacity: .9; z-index: 1; }
+        .rbtn:hover { border-color: var(--accent); }
+        .rbtn.sel { border-color: var(--rc); background: color-mix(in srgb, var(--rc) 18%, transparent); box-shadow: inset 0 -2px 0 var(--rc); }
+        .rbtn .rn { position: absolute; top: 4px; left: 5px; font-size: 9px; color: var(--text-dim); font-weight: 700; }
+        .rbtn .rside { position: absolute; top: 4px; right: 5px; font-size: 8px; font-weight: 700; letter-spacing: .5px; }
+        .rbtn .rside.ct { color: var(--ct); } .rbtn .rside.t { color: var(--t); }
+        .rbtn .rreason { font-size: 16px; margin-top: 2px; line-height: 1; }
+        .rbtn .rreason-ico { width: 16px; height: 16px; object-fit: contain; opacity: .95; }
+
+        /* Legend of selected rounds - removable chips */
+        #round-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; min-height: 4px; }
+        .leg-item {
+            display: flex; align-items: center; gap: 6px; font-family: var(--font-ui);
+            font-size: 11px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+            padding: 3px 7px; background: var(--bg);
+        }
+        .leg-dot { width: 10px; height: 10px; border-radius: 50%; }
+        .leg-sub { color: var(--text-dim); font-size: 9px; }
+        .leg-x { cursor: pointer; color: var(--text-dim); margin-left: 2px; font-size: 13px; line-height: 1; }
+        .leg-x:hover { color: #ff5d5d; }
+
+        /* Players - one .pmatch-block per loaded match, split into fixed T1/T2
+           columns (matchTeamIdOf) - same convention as the round filters. */
+        .player-search {
+            width: 100%; margin-bottom: 8px; padding: 6px 9px;
+            background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+            color: var(--text); font-family: var(--font-ui); font-size: 11px;
+        }
+        .player-search:focus { outline: none; border-color: var(--accent); }
+        /* Divider between matches - same convention as overwatch.html's .lrow/.llist */
+        .pmatch-block { padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+        .pmatch-block:last-child { padding-bottom: 0; margin-bottom: 0; border-bottom: none; }
+        .pmatch-head {
+            display: flex; align-items: center; gap: 7px; margin-bottom: 4px;
+            font-family: var(--font-ui); font-size: 11px; color: var(--text);
+        }
+        /* minmax(0, 1fr), not 1fr: a grid track's automatic minimum is
+           min-content, so a long player name made the right-hand column wider
+           than the sidebar and pushed that whole column off the panel. */
+        .pgroup-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 12px; }
+        .pgroup { min-width: 0; }
+        .pgroup-head {
+            display: flex; align-items: center; gap: 7px; margin-bottom: 2px;
+            font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+            font-weight: 700; color: var(--text-dim);
+        }
+        .pgroup-head.ct { color: var(--ct); }
+        .pgroup-head.t  { color: var(--t); }
+        .player-row {
+            display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 8px;
+            border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 500;
+            border-left: 3px solid transparent; transition: background .12s, opacity .12s;
+        }
+        .player-row.ct { border-left-color: var(--ct); }
+        .player-row.t  { border-left-color: var(--t); }
+        .player-row:hover { background: rgba(255,255,255,.04); }
+        .player-row:not(.sel) { opacity: .38; }
+        .player-row input { accent-color: var(--accent); flex-shrink: 0; cursor: pointer; margin: 0; }
+        .player-name {
+            flex: 1; min-width: 0; line-height: 1.2; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+        }
+        .player-name:hover { color: #fff; }
+        .focus-btn {
+            flex-shrink: 0; cursor: pointer; color: var(--text-dim); font-size: 14px;
+            line-height: 1; padding: 1px 4px; border-radius: var(--radius-sm); transition: color .12s;
+        }
+        .focus-btn:hover { color: var(--accent); }
+        .player-row.focused .focus-btn { color: var(--accent); text-shadow: 0 0 7px var(--accent); }
+        .player-row.focused .player-name { color: var(--accent); font-weight: 700; }
+        .util-btn {
+            flex-shrink: 0; cursor: pointer; color: var(--text-dim); font-size: 12px;
+            line-height: 1; padding: 1px 4px; border-radius: var(--radius-sm); transition: color .12s; opacity: .55;
+        }
+        .util-btn:hover { color: var(--t); opacity: 1; }
+        .player-row.util-only .util-btn { color: var(--t); opacity: 1; text-shadow: 0 0 7px var(--t); }
+        .hint { font-size: 10px; letter-spacing: .5px; color: var(--text-dim); margin-top: 8px; }
+
+        /* Toggle rows */
+        .toggle-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .toggle-row + .toggle-row { margin-top: 8px; }
+        /* Fixed column so every row's control starts at the same x. `width`
+           alone let a label wider than 54px (“Footsteps” was ~72px at this
+           letter-spacing) spill straight over the control beside it, which is
+           what made that row read as two overlapping labels. */
+        .tlabel { font-size: 10px; letter-spacing: 2px; color: var(--text-dim); text-transform: uppercase;
+                  width: 54px; flex: 0 0 54px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tg {
+            font-family: var(--font-ui); font-size: 11px; letter-spacing: 1px;
+            padding: 5px 10px; border: 1px solid var(--border); background: var(--bg);
+            color: var(--text); border-radius: var(--radius-sm); cursor: pointer; text-transform: uppercase;
+        }
+        .tg:hover { border-color: var(--accent); }
+        .tg.active { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+        .tg.off { opacity: .4; }
+        .chk-inline { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+        .hud-range { flex: 1; min-width: 90px; accent-color: var(--accent); }
+        .hud-val { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); min-width: 3.2em; text-align: right; }
+        .chk-inline input { accent-color: var(--accent); }
+
+        /* ── Scope bar ───────────────────────────────────────────────────────
+           The one control that says what this page is analysing. It governs
+           both halves of the page - the query AND the round rail - so it sits
+           above both rather than inside the Find tab with the query controls.
+           Buttons, not a select: four options that must be readable without
+           opening anything is the entire point. */
+        .scope-bar {
+            display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+            width: 100%; max-width: 1320px; padding: 8px 12px; margin: 10px 0 2px;
+        }
+        .sb-label {
+            font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim);
+        }
+        .sb-segs { display: flex; gap: 4px; flex-wrap: wrap; }
+        .sb-seg {
+            font-family: var(--font-ui); font-size: 11px; letter-spacing: .5px;
+            padding: 4px 10px; border: 1px solid var(--border); background: var(--bg);
+            color: var(--text-dim); border-radius: var(--radius-sm); cursor: pointer;
+        }
+        .sb-seg:hover { color: var(--accent); border-color: var(--accent); }
+        .sb-seg.on { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+        /* Which radar the page draws. Under an all-maps scope it repoints the
+           canvas without touching the question; otherwise it is the map scope.
+           Either way it is a navigation - MATCHES and the radar are
+           server-provided per map. */
+        .sb-map {
+            padding: 3px 6px; background: var(--bg); border: 1px solid var(--border);
+            border-radius: var(--radius-sm); color: var(--text-dim);
+            font-family: var(--font-ui); font-size: 10px;
+        }
+        .sb-map:focus { outline: none; border-color: var(--accent); color: var(--text); }
+        /* Per-match "analyse only this" in the round rail. */
+        .mscope {
+            font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+            color: var(--dim); cursor: pointer; padding: 0 4px;
+        }
+        .mscope:hover { color: var(--accent); }
+        .mscope.on { color: var(--accent); }
+
+        .sb-what {
+            font-family: var(--font-ui); font-size: 10px; color: var(--dim);
+            flex: 1; min-width: 140px;
+        }
+        .rail-scope { font-family: var(--font-ui); font-size: 9px; color: var(--dim); }
+        /* The way back from a narrowed rail. */
+        .match-more {
+            font-family: var(--font-ui); font-size: 10px; color: var(--dim);
+            padding: 6px 8px; margin-top: 6px; border: 1px dashed var(--border);
+            border-radius: var(--radius-sm); cursor: pointer; text-align: center;
+        }
+        .match-more:hover { color: var(--accent); border-color: var(--accent); }
+        .mentry { color: var(--accent); font-size: 11px; line-height: 1; }
+        /* A breakdown row that only reads (no filter, no scope behind it). */
+        table.q-bd td.k.ro { cursor: default; color: var(--text-dim); }
+        table.q-bd td.k.ro:hover { color: var(--text-dim); }
+        /* Map/match facet chips move the SCOPE rather than adding a filter. */
+        .q-facet.q-facet-scope.on { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+
+        /* Heatmap legend. A density picture with no scale is decoration -
+           this says what the darkest cell is actually worth, and owns up to
+           any points it could not place. */
+        .heat-legend {
+            display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+            font-family: var(--font-mono); font-size: 10px;
+            color: var(--dim); margin-top: 6px; min-height: 14px;
+        }
+        .heat-legend:empty { display: none; }
+        .heat-legend-l { color: var(--text-dim); }
+        .heat-legend-r { color: var(--dim); }
+        .heat-swatch { display: inline-block; width: 16px; height: 8px; border-radius: var(--radius-xs); }
+
+        /* ── Query panel (Find tab) ──────────────────────────────────────
+           The analyser's filter surface. Every control here is generated from
+           /analyser/fields, so this stylesheet describes shapes, never a
+           specific filter. */
+        .q-fixed { flex: 0 0 auto; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+        .q-row { display: flex; gap: 6px; margin-bottom: 7px; }
+        .q-row select {
+            flex: 1; min-width: 0; padding: 5px 7px; background: var(--bg);
+            border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text);
+            font-family: var(--font-ui); font-size: 11px;
+        }
+        .q-row select:focus { outline: none; border-color: var(--accent); }
+        .q-presets-row { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 7px; }
+        .q-presets { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
+        /* Any-of mode. A sticky toggle rather than a modifier key: an OR is
+           usually three or four values long, and a modifier you must hold for
+           each of them is a shortcut, not an affordance. */
+        .q-any {
+            flex: 0 0 auto; font-family: var(--font-ui); font-size: 10px;
+            letter-spacing: .5px; padding: 3px 7px; border: 1px solid var(--border);
+            background: var(--bg); color: var(--text-dim); border-radius: var(--radius-sm); cursor: pointer;
+        }
+        .q-any:hover { color: var(--accent); border-color: var(--accent); }
+        .q-any.on { border-color: var(--accent); background: var(--accent); color: var(--bg); }
+        .q-preset {
+            font-family: var(--font-ui); font-size: 10px; letter-spacing: .5px;
+            padding: 3px 7px; border: 1px solid var(--border); background: var(--bg);
+            color: var(--text-dim); border-radius: var(--radius-sm); cursor: pointer;
+        }
+        .q-preset:hover { color: var(--accent); border-color: var(--accent); }
+        /* Active conditions - the only place you can see, and undo, one piece
+           of what is currently being asked. */
+        .q-active { display: flex; flex-wrap: wrap; gap: 4px; }
+        .q-chip {
+            display: inline-flex; align-items: center; gap: 5px;
+            font-family: var(--font-ui); font-size: 10px;
+            padding: 3px 6px; border: 1px solid var(--accent); border-radius: var(--radius-sm);
+            color: var(--text); background: color-mix(in srgb, var(--accent) 12%, transparent);
+        }
+        .q-chip-x, .q-alt-x { cursor: pointer; color: var(--text-dim); font-size: 12px; line-height: 1; }
+        .q-chip-x:hover, .q-alt-x:hover { color: #ff5d5d; }
+        /* ¬ toggles the condition in place. Negated chips are drawn in the
+           same red as an excluded facet, so "excluded" looks the same
+           everywhere in the panel. */
+        .q-chip-neg { cursor: pointer; color: var(--dim); font-size: 11px; line-height: 1; }
+        .q-chip-neg:hover { color: var(--accent); }
+        .q-chip.neg { border-color: #ff5d5d; color: #ff9a9a; background: color-mix(in srgb, #ff5d5d 10%, transparent); }
+        .q-chip.neg .q-chip-neg { color: #ff5d5d; }
+        /* An OR group spells out its alternatives so the query stays legible
+           at a glance, and each one can be removed without losing the group. */
+        .q-chip.grp { gap: 4px; }
+        .q-grp-kind { font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: var(--dim); }
+        .q-alt { display: inline-flex; align-items: center; gap: 4px; padding: 1px 4px;
+                 border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+        .q-or { font-size: 9px; color: var(--dim); }
+
+        /* Two-ish columns, by width rather than by count, so the same rule
+           serves the 460px sidebar and the full-width stacked layout. This is
+           what makes the Find tab fit the map's height instead of merely
+           scrolling inside it: the groups are independent blocks, so they
+           columnise with no reflow cost, and `break-inside: avoid` is what
+           stops a group's chips being split across the gutter from its own
+           heading. */
+        /* 155px, and the number is measured, not chosen. `columns: <width>` is
+           a MINIMUM: if two of them plus the gutter don't fit, you silently get
+           one column and the rule saves nothing at all. The sidebar's content
+           box is 392px at 1920 (it gives up its 460px max so the map can have
+           860) and 334px at 960 - where it is pinned against the map's own
+           floor, so that is the width the number has to clear. Two 155s and a
+           12px gutter need 322. */
+        #q-facets { columns: 155px; column-gap: 12px; }
+        #q-facets .q-group { break-inside: avoid; }
+        .q-group { margin-bottom: 10px; }
+        .q-group-title { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); margin-bottom: 4px; }
+        .q-group-body { display: flex; flex-wrap: wrap; gap: 4px; }
+        /* A facet carries its own count, so the panel reads as a distribution
+           rather than a list of guesses. */
+        .q-facet, .q-flag {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-family: var(--font-ui); font-size: 10px;
+            padding: 3px 7px; border: 1px solid var(--border); background: var(--bg);
+            color: var(--text-dim); border-radius: var(--radius-sm); cursor: pointer;
+        }
+        .q-facet:hover, .q-flag:hover { border-color: var(--accent); color: var(--text); }
+        .q-facet.on, .q-flag.on { border-color: var(--accent); color: var(--bg); background: var(--accent); }
+        .q-facet.neg, .q-flag.neg { border-color: #ff5d5d; color: #ff5d5d; text-decoration: line-through; }
+        .q-facet-ro { cursor: default; opacity: .65; }
+        .q-facet-ro:hover { border-color: var(--border); color: var(--text-dim); }
+        .q-facet-n { color: var(--dim); font-size: 9px; }
+        .q-facet.on .q-facet-n { color: var(--bg); }
+        .q-facet-more { font-size: 9px; color: var(--dim); align-self: center; }
+        /* A multi-valued facet group's counts overlap. Saying so in the group
+           itself is cheaper than letting someone add the column up and
+           conclude the page is broken. */
+        .q-group-note { font-size: 9px; color: var(--dimmer); margin: -2px 0 4px; line-height: 1.3; }
+
+        /* ── Player picker ───────────────────────────────────────────────────
+           A <details> so it can be folded away: .q-fixed does not scroll (the
+           facet list below it is the only scroller), so anything added here is
+           height taken off the list for good. */
+        .q-picker { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px; }
+        .q-picker > summary {
+            font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+            color: var(--dim); cursor: pointer; list-style: none; margin-bottom: 5px;
+        }
+        .q-picker > summary::-webkit-details-marker { display: none; }
+        .q-picker > summary::before { content: '▾ '; }
+        .q-picker:not([open]) > summary::before { content: '▸ '; }
+        .q-roles { margin-bottom: 5px; }
+        .q-picker .player-search { margin-bottom: 5px; }
+        /* The list is a column of match blocks now, each split into its two
+           sides, rather than one alphabetical run of names: "with" and
+           "against" are questions about teams, and a flat list of ten names
+           answers neither. Team identity is FIXED (1 = first-half CT), and it
+           is drawn the way the Player tab draws it - a coloured left rule plus
+           a coloured heading - so the same two colours mean the same two teams
+           on both halves of the page. */
+        /* No max-height, no inner scroller: this sits inside .q-fixed, which
+           does not scroll either, so a scrollbar here was a third nested
+           scrolling region on one page. The <details> is the way to get the
+           height back - fold it. */
+        .q-picker-list { display: flex; flex-direction: column; gap: 7px; }
+        .q-pick-block { display: flex; flex-direction: column; gap: 3px; }
+        /* Only drawn when more than one match is in scope - with one match the
+           heading would name the thing the whole page is already about. */
+        .q-pick-match {
+            font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+            color: var(--dimmer); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .q-pick-teams {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+            gap: 5px 12px;
+        }
+        .q-pick-team { min-width: 0; border-left: 2px solid var(--border); padding-left: 7px; }
+        .q-pick-team.ct { border-left-color: var(--ct); }
+        .q-pick-team.t  { border-left-color: var(--t); }
+        .q-pick-team-head {
+            font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+            font-weight: 700; color: var(--text-dim); margin-bottom: 3px;
+        }
+        .q-pick-team.ct .q-pick-team-head { color: var(--ct); }
+        .q-pick-team.t  .q-pick-team-head { color: var(--t); }
+        .q-pick-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+        .q-pick {
+            font-family: var(--font-ui); font-size: 10px;
+            background: none; color: var(--text);
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            padding: 2px 6px; cursor: pointer; white-space: nowrap;
+        }
+        .q-pick:hover { border-color: var(--accent); color: var(--accent); }
+        .q-pick.on { border-color: var(--accent); background: var(--accent); color: var(--bg); }
+        .q-pick.neg {
+            border-color: var(--loss, #ff7a7a); color: var(--loss, #ff7a7a);
+            background: none; text-decoration: line-through;
+        }
+        .q-picker-hint { font-size: 9px; color: var(--dimmer); margin-top: 4px; line-height: 1.3; }
+
+        /* ── Results ─────────────────────────────────────────────────────────
+           Full-width band under the map. Rows are the shared moment-row markup
+           (static/momentrow.logic.js), so they look and behave like the match
+           page's Highlights tab and the player page's reel.
+
+           SIZED TO BE READ, NOT GLANCED AT. Everything here started at 9-11px
+           mono - the same scale as the control chrome above it - which reads as
+           a status line rather than as the answer to the question you just
+           asked. The chrome can stay small because you aim at it; the results
+           are the output of the whole page, so the numbers, the table cells and
+           the rows are a full step larger, the interval bars are tall enough to
+           see the span rather than infer it, and every figure is tabular so
+           columns of digits line up. What is still 9-10px here is a caption or
+           a unit label attached to something bigger. */
+        #results-wrap {
+            width: 100%; max-width: 1320px; padding: 0 12px;
+            margin-top: 14px; margin-bottom: 28px;
+            font-variant-numeric: tabular-nums;
+        }
+        .q-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+        .q-head .section-title { flex: 1; min-width: 160px; margin-bottom: 8px; }
+        #q-count { font-family: var(--font-mono); font-size: 15px; color: var(--accent); }
+        #q-status { font-family: var(--font-ui); font-size: 12px; color: var(--dim); }
+        /* The map actions travel together and sit at the end of the header. */
+        .q-actions { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
+        #q-aggregates { margin-bottom: 14px; }
+
+        /* Headline stats. The four counts and the means used to be .meta-pill
+           chips - 11px, label and value on one line, the same chip the hero
+           band uses for "17 rounds" - so the single most important number on
+           the page (how many moments matched) was set in the same size as its
+           own caption. A tile puts the number first at 22px with the unit under
+           it, which is what makes the strip readable at a glance instead of
+           only on inspection. */
+        .q-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+        .q-stat {
+            display: flex; flex-direction: column; gap: 3px; min-width: 84px;
+            padding: 7px 13px; background: var(--panel);
+            border: 1px solid var(--border-soft); border-radius: var(--radius-md);
+        }
+        .q-stat-v { font-family: var(--font-mono); font-size: 22px; line-height: 1; color: var(--text); }
+        .q-stat.accent .q-stat-v { color: var(--accent); }
+        .q-stat-l { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); }
+
+        /* min(390px, 100%) rather than a bare 390px: auto-fill lays a track at the
+           stated minimum even when the container is narrower than it, so on a
+           quarter-width window the rate strip alone pushed the page sideways. */
+        .q-rates { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(390px, 100%), 1fr)); gap: 7px 22px; margin-bottom: 14px; }
+        .q-rate { display: flex; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 12px; }
+        .q-rate.thin { opacity: .55; }
+        .q-rate-l { color: var(--text-dim); min-width: 132px; }
+        /* The bar shows the Wilson interval as a wide faint span with the point
+           estimate marked inside it - a 3/4 and a 300/400 look different here,
+           which is the entire point. Tall enough that the span is a shape you
+           see rather than a hairline you have to go looking for. */
+        .q-rate-bar { position: relative; flex: 1; min-width: 70px; height: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-pill); }
+        .q-rate-bar .ci { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 32%, transparent); border-radius: inherit; }
+        .q-rate-bar .pt { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--accent); }
+        .q-rate-v { color: var(--text); min-width: 46px; text-align: right; font-size: 14px; }
+        .q-rate-n { color: var(--dim); min-width: 96px; font-size: 11px; }
+        /* ── Breakdown table ─────────────────────────────────────────────
+           The same aggregate() the headline strip uses, once per bucket. Every
+           cell carries its own n, and the interval bar under a percentage is
+           what stops a 2/3 from reading like a 200/300. */
+        .q-group-by { font-family: var(--font-ui); font-size: 12px; color: var(--dim); display: inline-flex; align-items: center; gap: 6px; }
+        .q-group-by select {
+            padding: 4px 8px; background: var(--bg); border: 1px solid var(--border);
+            border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-ui); font-size: 12px;
+        }
+        #q-breakdown { margin-bottom: 14px; overflow-x: auto; }
+        table.q-bd { border-collapse: collapse; font-family: var(--font-ui); font-size: 12px; min-width: 100%; }
+        table.q-bd th {
+            text-align: left; font-weight: 400; font-size: 10px; letter-spacing: 1px;
+            text-transform: uppercase; color: var(--dim); padding: 7px 11px;
+            border-bottom: 1px solid var(--border); white-space: nowrap; cursor: pointer; user-select: none;
+        }
+        table.q-bd th:hover { color: var(--accent); }
+        table.q-bd th.sorted { color: var(--accent); }
+        table.q-bd td { padding: 7px 11px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); white-space: nowrap; }
+        /* Zebra as well as hover: with a dozen rate columns the eye loses its
+           line halfway across, and this table exists to be read across. */
+        table.q-bd tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--panel) 55%, transparent); }
+        table.q-bd tr:hover td { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+        /* The bucket name is the row's identity, so it stays put when the rate
+           columns scroll out from under it. Its background must be opaque, or
+           the scrolling cells show through the one column that has to stay
+           readable. */
+        table.q-bd th:first-child, table.q-bd td:first-child { position: sticky; left: 0; z-index: 1; background: var(--bg); }
+        table.q-bd tbody tr:nth-child(even) td:first-child { background: color-mix(in srgb, var(--panel) 55%, var(--bg)); }
+        table.q-bd tr:hover td:first-child { background: color-mix(in srgb, var(--accent) 9%, var(--bg)); }
+        table.q-bd td.k { color: var(--text); cursor: pointer; }
+        table.q-bd td.k:hover { color: var(--accent); }
+        table.q-bd td.k.on { color: var(--accent); }
+        table.q-bd td.num { color: var(--text-dim); text-align: right; }
+        .q-cell { display: inline-flex; flex-direction: column; gap: 3px; min-width: 78px; }
+        .q-cell-v { color: var(--text); }
+        .q-cell-v .n { color: var(--dim); font-size: 10px; }
+        .q-cell.thin .q-cell-v { color: var(--dim); }
+        .q-cell-bar { position: relative; height: 5px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-pill); }
+        .q-cell-bar .ci { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 32%, transparent); border-radius: inherit; }
+        .q-cell-bar .pt { position: absolute; top: -1px; bottom: -1px; width: 2px; background: var(--accent); }
+        .q-bd-note { font-family: var(--font-ui); font-size: 11px; color: var(--dim); margin-top: 6px; }
+
+        .q-hist { margin-bottom: 14px; max-width: 640px; }
+        .q-hist-title { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); margin-bottom: 5px; }
+        .q-hist-bars { display: flex; align-items: flex-end; gap: 1px; height: 64px; }
+        .q-hist-bars i { flex: 1; background: color-mix(in srgb, var(--accent) 55%, transparent); min-height: 1px; }
+        .q-hist-bars i:hover { background: var(--accent); }
+        .q-hist-axis { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 10px; color: var(--dim); margin-top: 3px; }
+        #q-results { display: flex; flex-direction: column; gap: 4px; }
+        #q-results.q-busy { opacity: .5; }
+        .q-empty { font-family: var(--font-ui); font-size: 13px; color: var(--dim); padding: 14px 0; }
+        #q-more { margin-top: 10px; }
+
+        /* Moment rows come from static/momentrow.css (loaded by _shell.html) -
+           the same component the match page's Highlights tab and the player
+           page's reel draw. This page used to restate the whole block, which
+           is precisely the drift that extraction was meant to end; all that is
+           left here is the one thing this surface genuinely wants differently:
+           BIGGER ROWS. A result list is the output of an analysis tool and gets
+           read, not glanced at, so it sets --mr-fs and every part of the row
+           scales with it. */
+        #q-results { --mr-fs: 13px; }
+        /* One thing the shared row can't know: these results span matches, so
+           every row carries a match stem. Left at its natural width a long one
+           pushes the label and detail out of alignment down the whole list, so
+           it is capped and ellipsised here - the full name is on the title. */
+        #q-results .m-match { max-width: 14em; overflow: hidden; text-overflow: ellipsis; }
+
+        /* Playback */
+        #controls-wrap { width: 100%; max-width: 1320px; margin-top: 12px; margin-bottom: 28px; padding: 0 12px; }
+        #timeline-wrap { position: relative; height: 18px; margin-bottom: 10px; }
+        #timeline { position: absolute; top: 4px; left: 0; width: 100%; height: 4px; -webkit-appearance: none; background: transparent; outline: none; cursor: pointer; z-index: 2; }
+        #timeline::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; background: var(--accent); border-radius: 50%; cursor: pointer; border: 2px solid var(--bg); }
+        /* Density window FROM handle - overlaid on the same track; only its thumb takes clicks */
+        #timelineA { position: absolute; top: 4px; left: 0; width: 100%; height: 4px; -webkit-appearance: none; background: transparent; outline: none; z-index: 3; pointer-events: none; }
+        #timelineA::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; background: var(--t); border-radius: 50%; cursor: pointer; border: 2px solid var(--bg); pointer-events: auto; }
+        #timelineA::-moz-range-thumb { width: 14px; height: 14px; background: var(--t); border-radius: 50%; cursor: pointer; border: 2px solid var(--bg); pointer-events: auto; }
+        #timeline-track { position: absolute; top: 4px; left: 0; right: 0; height: 4px; background: var(--border); border-radius: var(--radius-pill); }
+        .controls-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        button.ctl {
+            background: var(--panel); border: 1px solid var(--border); color: var(--text);
+            font-family: var(--font-ui); font-size: 13px; font-weight: 700; letter-spacing: 2px;
+            text-transform: uppercase; padding: 7px 16px; cursor: pointer;
+        }
+        button.ctl:hover { border-color: var(--accent); color: #fff; }
+        button.ctl.active { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+        .speed-btn { padding: 7px 11px; font-size: 12px; }
+        #clock { margin-left: auto; font-family: var(--font-mono); font-size: 13px; color: var(--text-dim); }
+        #clock span { color: var(--text); font-size: 16px; }
+
+        /* ── Responsive tiers ────────────────────────────────────────────────
+           This page shipped with NO media query at all, which is why a
+           quartered window broke it outright rather than degrading: every
+           multi-column block here states a minimum track width, and a grid
+           track is laid out at its stated minimum whether or not the container
+           can hold it. Below the widths where those minimums stop fitting,
+           each block collapses to one column. */
+
+        /* The map (min 300px of sidebar + a canvas worth looking at) stops
+           fitting beside the sidebar. The sidebar goes under it and the canvas
+           takes the full column - and NO height guard: `calc(100vh - …)` is
+           there to keep the controls near the map on a wide short window, and
+           down here it was the only thing making the canvas tiny (310px on a
+           640x520 window, where the column is 620px wide). */
+        @media (max-width: 900px) {
+            .main-layout { flex-wrap: wrap; }
+            .map-col { flex: 1 0 100%; max-width: 100%; }
+            /* Nothing to match a height to once the map is above rather than
+               beside it - so the panel goes back in flow and the page is the
+               only scroller again. */
+            #side { flex: 1 1 100%; max-width: none; min-width: 0; position: static; }
+            #side > .panel { position: static; }
+            #side .tab-panel { overflow-y: visible; scrollbar-gutter: auto; }
+            .pgroup-pair { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+        }
+
+        /* Short-window hero - the replayer's rule (see index.html): icon beside
+           the name, pills in two rows, ~80px instead of 159px.
+
+           Same wrap-collision fix as index.html/match.html: hero-map + #meta
+           + hero-pills can add up to more than header.hero has room for, and
+           flex-wrap then puts hero-pills on its own line, landing it (still
+           margin-left:auto) alone and disconnected below the title instead
+           of beside it. Two things make #meta wider here than on the other
+           two pages: #timeLabel can render a RANGE ("0:00–1:55", selected
+           rounds) rather than one clock value, and #status carries an
+           arbitrary, sometimes-long message ("N rounds added...",
+           "Failed to load <match>") with no natural cap. Hiding the static
+           "Multi Round Analyser" label recovers the same ~190px it did on
+           the replayer; #status additionally gets a hard max-width with an
+           ellipsis + its full text in `title`, because unlike a clock's
+           digit count, a status message's length is not bounded at all -
+           reserving a "worst case" width for it isn't possible the way it
+           was for #roundLabel/#timeLabel on index.html. */
+        @media (min-width: 701px) and (max-height: 1100px) {
+            header.hero { padding: 12px 20px; gap: 14px; margin-bottom: 12px; }
+            .hero-map { display: grid; grid-template-columns: auto auto; column-gap: 12px; align-items: center; padding: 8px 14px; }
+            .hero-map-ico { grid-row: 1 / span 2; height: 36px; margin-bottom: 0; }
+            .hero-map-name, .hero-map-sub { grid-column: 2; }
+            .hero-map-name { font-size: 24px; }
+            .hero-pills { display: grid; grid-auto-flow: column; grid-template-rows: auto auto; gap: 5px 6px; }
+            .meta-pill { padding: 3px 7px; }
+            .hero-page { display: none; }
+            #status { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        }
+
+        /* Quarter-window tier (a 1080p screen quartered is ~640x520). */
+        @media (max-width: 700px) {
+            header.hero { gap: 14px; padding: 14px; margin-bottom: 12px; }
+            .hero-map { padding: 7px 12px; }
+            .hero-map-ico { height: 32px; }
+            .hero-map-name { font-size: 20px; letter-spacing: 1px; }
+            .hero-pills { margin-left: 0; }
+            .scope-bar { padding: 8px 10px; }
+            #controls-wrap, #results-wrap, .main-layout { padding: 0 10px; }
+            /* 10 square buttons across a 620px column are 60px each; across a
+               340px one they are 30px and the round number stops being
+               readable. Six is the widest that still shows the win-condition
+               icon at its natural size. */
+            .round-grid { grid-template-columns: repeat(6, 1fr); }
+            .q-rate-l { min-width: 0; }
+            .q-rate-n { min-width: 0; }
+        }
+    </style>
+{% endblock %}
+{% block content %}
+
+<header id="match-hero" class="hero" style="display:none">
+    <div class="hero-map">
+        <img class="hero-map-ico" id="hero-map-ico" alt="" style="display:none">
+        <div class="hero-map-name" id="hero-map">-</div>
+        <div class="hero-map-sub"  id="hero-mode">-</div>
+    </div>
+    <div id="meta">
+        <div class="hero-page">Multi Round Analyser</div>
+        <div class="meta-pill">ROUND-TIME <span id="timeLabel">0:00</span></div>
+        <div class="meta-pill" id="status">Loading…</div>
+    </div>
+    <div class="hero-pills">
+        <div class="meta-pill" id="hero-loaded" style="display:none"></div>
+        <div class="meta-pill" id="hero-rank" style="display:none"></div>
+        <div class="meta-pill" id="hero-rounds">-</div>
+        <div class="meta-pill" id="hero-kills">-</div>
+        <div class="meta-pill" id="hero-dmg">-</div>
+    </div>
+</header>
+
+<section id="scope-bar" class="scope-bar">
+    <span class="sb-label">Analysing</span>
+    <div class="sb-segs" id="sb-segs"></div>
+    <select class="sb-map" id="sb-map" style="display:none"></select>
+    <span class="sb-what" id="sb-what"></span>
+</section>
+
+<div class="main-layout">
+    <div class="map-col">
+        <div class="panel">
+            <div id="map-wrap">
+                <canvas id="mapCanvas" width="1024" height="1024"></canvas>
+                <div id="loading">Loading…</div>
+            </div>
+            <div id="heat-legend" class="heat-legend"></div>
+        </div>
+    </div>
+
+    <div id="side">
+        <div class="panel">
+            <div class="tab-bar">
+                <button class="tab-btn active" data-side-tab="find">Find</button>
+                <button class="tab-btn" data-side-tab="rounds">Rounds</button>
+                <button class="tab-btn" data-side-tab="player">Player</button>
+                <button class="tab-btn" data-side-tab="display">Display</button>
+            </div>
+
+            <div class="tab-panel active" id="side-tab-find">
+                <div class="panel-title">
+                    <span id="q-summary">kills</span>
+                    <span class="mini" id="btnClearQuery" style="display:none">Clear</span>
+                </div>
+                <div class="q-fixed">
+                    <div class="q-row">
+                        <select id="q-unit" title="What one result row is"></select>
+                        <select id="q-sort" title="Result order">
+                            <option value="recent">newest match first</option>
+                            <option value="chrono">oldest first</option>
+                            <option value="impact">biggest moment first</option>
+                            <option value="t_into_round">earliest in the round</option>
+                        </select>
+                    </div>
+                    <div class="q-presets-row">
+                        <div id="q-presets" class="q-presets"></div>
+                        <button type="button" id="q-any" class="q-any"
+                            title="Any-of mode: the next value you click joins the condition being built as an alternative (OR) instead of narrowing it">∨ any of</button>
+                    </div>
+                    <!-- Player picker. The facet list below can only offer
+                         players already in the result set, top 12 of them, so
+                         most of the corpus is unreachable from it and a
+                         two-player question can't be built at all. This is
+                         scoped to the matches in view and knows who was on
+                         whose team, which is what makes "with" and "against"
+                         mean something. -->
+                    <details class="q-picker" id="q-picker" open>
+                        <summary>Players</summary>
+                        <div class="mini-group q-roles" id="q-player-roles">
+                            <button type="button" class="mini on" data-role="player">subject</button>
+                            <button type="button" class="mini" data-role="with_player">with</button>
+                            <button type="button" class="mini" data-role="vs_player">against</button>
+                        </div>
+                        <input type="text" id="q-player-search" class="player-search"
+                               placeholder="find a player…" autocomplete="off">
+                        <div class="q-picker-list" id="q-player-list"></div>
+                        <div class="q-picker-hint" id="q-player-hint"></div>
+                    </details>
+                    <div id="q-active" class="q-active"></div>
+                </div>
+                <div class="panel-body" id="q-facets"></div>
+                <div class="hint">Click a value to filter &nbsp;&middot;&nbsp; Alt-click to exclude &nbsp;&middot;&nbsp; <b>∨ any of</b> to build an OR &nbsp;&middot;&nbsp; ¬ on a chip negates it</div>
+            </div>
+
+            <div class="tab-panel" id="side-tab-rounds">
+                <div class="panel-title">
+                    <span>Click a round to overlay</span>
+                    <span class="rail-scope" id="rail-scope"></span>
+                    <span class="mini" id="btnClearRounds">Clear all</span>
+                </div>
+                <div class="panel-body" id="rounds-body">
+                    <div id="match-sections"></div>
+                </div>
+                <div id="round-legend"></div>
+            </div>
+
+            <div class="tab-panel" id="side-tab-player">
+                <div class="panel-title">
+                    <span id="player-count"></span>
+                    <span class="mini-group">
+                        <span class="mini" id="btnAllPlayers">All</span>
+                        <span class="mini" id="btnNoPlayers">None</span>
+                    </span>
+                </div>
+                <input type="text" class="player-search" id="player-search"
+                       placeholder="Filter players… (Enter adds all matching)" autocomplete="off">
+                <div class="panel-body" id="player-body">
+                    <div id="player-groups"></div>
+                </div>
+                <div class="hint">Checkbox / name - show on map &nbsp;·&nbsp; ◎ - spotlight (dims everyone else, additive) &nbsp;·&nbsp; 💣 - utility spotlight (additive - toggle multiple players' smokes/flashes/nades)</div>
+            </div>
+
+            <div class="tab-panel" id="side-tab-display">
+                <div class="panel-body">
+                    <div class="toggle-row">
+                        <span class="tlabel">View</span>
+                        <button class="tg active" data-view="play" title="Live playback - one playhead replays every selected round in sync">Playback</button>
+                        <button class="tg" data-view="density" title="No playhead - accumulate all paths, deaths and utility inside a time window">Density</button>
+                    </div>
+
+                    <div class="toggle-row">
+                        <span class="tlabel">Color</span>
+                        <button class="tg active" data-color="round" title="One color per selected round">By Round</button>
+                        <button class="tg" data-color="match" title="One color per match">By Match</button>
+                        <button class="tg" data-color="team" title="CT blue / T orange">By Team</button>
+                    </div>
+
+                    <div class="toggle-row">
+                        <span class="tlabel">Trails</span>
+                        <label class="chk-inline" title="Same short trail as the 2D Replay Viewer (~1.5s)"><input type="checkbox" id="chkTrails"> Show trails</label>
+                    </div>
+
+                    <div class="toggle-row">
+                        <span class="tlabel">Utility</span>
+                        <button class="tg active" data-util="smoke">Smoke</button>
+                        <button class="tg active" data-util="fire">Fire</button>
+                        <button class="tg active" data-util="flash">Flash</button>
+                        <button class="tg active" data-util="he">HE</button>
+                        <button class="tg active" data-util="nade">Nades</button>
+                        <button class="tg active" data-util="drops" title="Weapons and utility lying on the ground (needs a re-parsed demo - older matches have no drop data)">Drops</button>
+                        <button class="tg active" data-util="bomb" title="Planted or dropped C4 per round, plus a progress ring while someone is planting or defusing (needs a re-parsed demo)">Bomb</button>
+                    </div>
+
+                    <div class="toggle-row">
+                        <span class="tlabel" title="Size of the in-canvas kill feed. It is drawn at a fixed pixel size onto a 1024x1024 canvas that CSS then scales, so it shrinks relative to the map on a large display - this scales it back up. Shared with the 2D Replay Viewer and remembered between sessions.">HUD</span>
+                        <input type="range" id="hud-scale" class="hud-range" min="60" max="200" step="5" value="100">
+                        <span id="hud-scale-val" class="hud-val">100%</span>
+                    </div>
+
+                    <div class="toggle-row">
+                        <span class="tlabel">Names</span>
+                        <button class="tg" data-names="auto" title="Show labels up to ~12 tracks, or always for spotlighted players">Auto</button>
+                        <button class="tg active" data-names="all" title="Always show every visible player's name">All</button>
+                        <button class="tg" data-names="off" title="Hide all name labels">Off</button>
+                    </div>
+
+                    <!-- Multi-level maps only (Nuke, Vertigo). Hidden by
+                         updateLayerButtons() on every other map - see
+                         static/maplayers.logic.js. -->
+                    <div class="toggle-row" id="layer-row" style="display:none">
+                        <span class="tlabel" title="Nuke and Vertigo are two maps stacked on top of each other; a flat radar cannot show both">Layer</span>
+                        <button class="tg active" data-layer="auto" title="Follow whichever floor most of the living players on screen are on">Auto</button>
+                        <button class="tg" data-layer="upper">Upper</button>
+                        <button class="tg" data-layer="lower">Lower</button>
+                    </div>
+
+                    <div class="toggle-row">
+                        <span class="tlabel">Sound</span>
+                        <label class="chk-inline" title="Circles at the real CS2 hearing range: running ~1100u, unsuppressed gunfire ~4000u, suppressed ~900u, grenade detonations ~3500u, plant/defuse ~1100u"><input type="checkbox" id="chkFootsteps"> Show audibility</label>
+                    </div>
+
+                    <div class="toggle-row">
+                        <span class="tlabel">Time</span>
+                        <label class="chk-inline"><input type="checkbox" id="chkFreeze"> Include freeze time</label>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="controls-wrap">
+    <div id="timeline-wrap">
+        <div id="timeline-track"></div>
+        <input type="range" id="timelineA" min="0" max="0" value="0" step="1" style="display:none">
+        <input type="range" id="timeline" min="0" max="0" value="0" step="1">
+    </div>
+    <div class="controls-row">
+        <button class="ctl" id="btnPlay">▶ Play</button>
+        <button class="ctl" id="btnPause">⏸ Pause</button>
+        <button class="ctl" id="btnStop">■ Reset</button>
+        <button class="ctl speed-btn" data-speed="0.25">0.25×</button>
+        <button class="ctl speed-btn" data-speed="0.5">0.5×</button>
+        <button class="ctl speed-btn active" data-speed="1">1×</button>
+        <button class="ctl speed-btn" data-speed="2">2×</button>
+        <span class="hint" style="margin-top:0">Space - play/pause &nbsp;·&nbsp; ← → - step (Shift = 1s)</span>
+        <div id="clock">ROUND TIME&nbsp; <span id="timeLabel2">-</span></div>
+    </div>
+</div>
+
+<section id="results-wrap">
+    <div class="q-head">
+        <h2 class="section-title">Results <span id="q-count"></span></h2>
+        <span id="q-status"></span>
+        <label class="q-group-by">break down by
+            <select id="q-group" title="Split the current results and aggregate each bucket separately"></select>
+        </label>
+        <span class="q-actions">
+            <button class="tg" id="btnHeat" title="Paint the matched moments on the map - kills at the attacker's position, deaths at the victim's">🔥 Heatmap</button>
+            <button class="tg" id="btnAddAll" style="display:none">+ Overlay all</button>
+            <button class="tg" id="btnClearOverlay" style="display:none" title="Take every round back off the map (same as Clear all in the Rounds tab)">✕ Clear overlay</button>
+        </span>
+    </div>
+    <div id="q-aggregates"></div>
+    <div id="q-breakdown"></div>
+    <div id="q-results"></div>
+    <button class="ctl" id="q-more" style="display:none">show more</button>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+    // Same-map matches offered by the server (newest first) + the entry match.
+    // The OFFERED superset: every match on this page's map, entry first. What
+    // is actually in SCOPE is window.MULTI_SCOPE - the two are different on
+    // purpose, so widening needs no reload (see app.py's /multi docstring).
+    window.MULTI_MATCHES = {{ matches|tojson }};
+    window.MULTI_SCOPE   = {{ scope|tojson }};
+    // The map this page was entered on. The analyser scopes its first query to
+    // it, so the results you land on are ones the overlay can actually draw -
+    // "All maps" is one click away in the scope select.
+    window.MULTI_MAP = window.MULTI_SCOPE.map || '';
+</script>
+<script>
+    // mirror the round-time label into the controls clock on each render
+    const _origTimeLabel = document.getElementById('timeLabel');
+    const _clockLabel = document.getElementById('timeLabel2');
+    new MutationObserver(() => { _clockLabel.textContent = _origTimeLabel.textContent; })
+        .observe(_origTimeLabel, { childList: true, characterData: true, subtree: true });
+</script>
+<script src="{{ url_for('static', filename='chunks.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='chunks.js') }}"></script>
+<script src="{{ url_for('static', filename='fmt.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='maps.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='assets.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='assets.js') }}"></script>
+<script src="{{ url_for('static', filename='matchhero.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='matchhero.js') }}"></script>
+<script src="{{ url_for('static', filename='match2d.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='match2d.js') }}"></script>
+<script src="{{ url_for('static', filename='scope.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='momentheat.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='momentheat.js') }}"></script>
+<script src="{{ url_for('static', filename='viewport.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='viewport.js') }}"></script>
+<script src="{{ url_for('static', filename='killfeed.js') }}"></script>
+<script src="{{ url_for('static', filename='utilfx.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='utilfx.js') }}"></script>
+<script src="{{ url_for('static', filename='grounditems.logic.js') }}"></script>
+<!-- Plant/defuse progress - multi.js draws the ring at the bomb, and reads
+     isStateEvent() to separate "where is the bomb" from "what is happening
+     to it" (bomb[] carries both kinds of entry). -->
+<script src="{{ url_for('static', filename='bombaction.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='bombaction.js') }}"></script>
+<script src="{{ url_for('static', filename='grounditems.js') }}"></script>
+<script src="{{ url_for('static', filename='instantreplay.js') }}"></script>
+<script src="{{ url_for('static', filename='clipbox.js') }}"></script>
+<script src="{{ url_for('static', filename='demojump.js') }}"></script>
+<script src="{{ url_for('static', filename='momentrow.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='momentrow.js') }}"></script>
+<script src="{{ url_for('static', filename='query.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='maplayers.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='analyser.js') }}"></script>
+<script src="{{ url_for('static', filename='multi.js') }}"></script>
+{% endblock %}

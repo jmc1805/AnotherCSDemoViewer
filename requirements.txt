@@ -1,0 +1,4 @@
+flask>=3.0
+werkzeug>=3.0
+waitress>=3.0
+brotli>=1.1

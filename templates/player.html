@@ -1,0 +1,347 @@
+{% extends "_shell.html" %}
+{% block title %}CS2 Stats - {{ p.name }}{% endblock %}
+
+{% block head %}
+<style>
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; padding: 14px 24px; position: sticky; top: 0; z-index: 90; }
+    .topbar a.back { font-family: var(--font-ui); font-size: 11px; color: var(--dim); text-decoration: none; }
+    .topbar a.back:hover { color: var(--accent); }
+    .topbar-title { font-size: 20px; font-weight: 800; letter-spacing: 2px; color: white; }
+    .topbar a.steam { font-family: var(--font-ui); font-size: 11px; color: var(--dim); text-decoration: none; }
+    .topbar a.steam:hover { color: var(--accent); text-decoration: underline; }
+    .topbar-spacer { flex: 1; }
+    /* Rank badge in the page header, a size up from the tables' since it is
+       naming the one player this page is about. The badge itself (image or
+       Premier rating chip) comes from static/rankbadge.css. */
+    .prank { white-space: nowrap; --rank-badge-h: 26px; }
+    .mono { font-family: var(--font-mono); }
+    .kd-hi { color: var(--win); } .kd-lo { color: var(--loss); }
+
+    main { padding: 20px 24px 40px; }
+    .pcard { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 22px 28px; }
+    .pcard-sec { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px 18px; }
+    .pcard-sec h4 { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); margin: 0 0 12px; font-weight: 700; }
+    .pcard-sec.full { grid-column: 1 / -1; }
+    /* Collapsible sections (Highlights, Appears in N demos) are <details>
+       elements carrying .pcard-sec directly, with <summary> standing in for
+       the <h4> caption above - same disclosure convention as match.html's
+       .ow-legend. */
+    .pcard-sec > summary { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim);
+                            margin: 0 0 12px; font-weight: 700; cursor: pointer; user-select: none; list-style: none; }
+    .pcard-sec > summary::-webkit-details-marker { display: none; }
+    .pcard-sec > summary::before { content: '▸ '; color: var(--dimmer); }
+    .pcard-sec[open] > summary::before { content: '▾ '; }
+
+    .kstat-row { display: flex; flex-wrap: wrap; gap: 20px 28px; align-items: center; }
+    .kstat { display: flex; flex-direction: column; gap: 1px; }
+    .kstat b { font-family: var(--font-ui); font-size: 26px; font-weight: 800; color: white; line-height: 1; }
+    .kstat span { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--dim); }
+    .kstat b.kd-hi { color: var(--win); } .kstat b.kd-lo { color: var(--loss); }
+
+    .mrow { display: grid; grid-template-columns: 1fr auto 60px; gap: 10px; align-items: center; font-family: var(--font-narrow); font-size: 12px; padding: 4px 0; }
+    .mrow .mname { color: var(--text); text-transform: uppercase; }
+    .mrow .mwl { color: var(--dim); }
+    .wl-bar { height: 6px; border-radius: var(--radius-pill); background: var(--loss); overflow: hidden; }
+    .wl-bar > i { display: block; height: 100%; background: var(--win); }
+    /* Per-map rank chip - the newest rank recorded on that map, same badge
+       machinery as the header's .prank, just sized down to fit an .mrow. */
+    .mrank { white-space: nowrap; --rank-badge-h: 16px; }
+
+    .ow-feat-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-family: var(--font-narrow); font-size: 12px; }
+    .ow-feat-row .ofname { flex: 1; min-width: 0; color: var(--dim); }
+    .ow-feat-row .ofval { font-family: var(--font-mono); font-size: 12px; color: var(--text); white-space: nowrap; }
+    .ow-feat-row .ofpct { font-family: var(--font-mono); font-size: 11px; color: var(--dimmer); white-space: nowrap; min-width: 64px; text-align: right; }
+    .ow-feat-note { font-family: var(--font-ui); font-size: 11px; color: var(--dimmer); }
+
+    .wtable { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; }
+    .wtable td { padding: 4px 8px 4px 0; white-space: nowrap; }
+    .wtable td.wname { color: var(--text); text-transform: uppercase; }
+    .wtable td.wnum { text-align: right; color: var(--dim); }
+    .wtable td.wacc { text-align: right; color: var(--accent); }
+
+    .match-links { display: flex; flex-direction: column; gap: 5px; max-height: 320px; overflow-y: auto; }
+    .match-links a { font-family: var(--font-ui); font-size: 12px; color: var(--dim); text-decoration: none; }
+    .match-links a:hover { color: var(--accent); }
+
+    .hl-list { display:flex; flex-direction:column; gap:4px; }
+    /* Moment rows and the preview/clip boxes: static/momentrow.css - the
+       same component the match page's Overwatch and Highlights tabs use.
+       This page carried its own drifted copy of that block, which is why its
+       multi-kill chips, its dim text and its box shells all looked slightly
+       different from every other surface showing the same moments. */
+    .hl-media { --clip-w:360px; --clip-h:203px; }
+    .hl-match { color:var(--dimmer); font-size:10px; text-decoration:none; margin-left:auto; white-space:nowrap; }
+    .hl-match:hover { color:var(--accent); }
+    /* Match grouping for the highlight reel */
+    .hl-group { margin-top:10px; }
+    .hl-group:first-child { margin-top:0; }
+    .hl-group-head { display:flex; align-items:baseline; gap:8px; padding:0 0 4px;
+                     border-bottom:1px solid var(--border); margin-bottom:5px; }
+    .hl-group-map { font-family:var(--font-ui); font-size:11px; font-weight:700;
+                    letter-spacing:1px; text-transform:uppercase; color:var(--text); text-decoration:none; }
+    .hl-group-map:hover { color:var(--accent); }
+    .hl-group-date { font-family:var(--font-mono); font-size:10px; color:var(--dimmer); }
+    .hl-group-count { font-family:var(--font-mono); font-size:10px; color:var(--dimmer); margin-left:auto; }
+    .hl-more { font-family:var(--font-ui); font-size:10px; color:var(--dim);
+               background:none; border:1px solid var(--border); border-radius: var(--radius-sm);
+               padding:2px 8px; margin-top:4px; cursor:pointer; }
+    .hl-more:hover { border-color:var(--accent); color:var(--text); }
+
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--dim); }
+</style>
+{% endblock %}
+
+{% block content %}
+<header class="topbar">
+    <a class="back" href="/players">← Players</a>
+    <span class="topbar-title">{{ p.name }}</span>
+    {% if p.rankLabel %}
+    <span class="prank" {% if p.rank %}data-rank-type="{{ p.rank.rank_type }}" data-rank="{{ p.rank.rank }}"{% endif %}>{{ p.rankLabel }}</span>
+    {% endif %}
+    <div class="topbar-spacer"></div>
+    {% if p.steam_id %}<a class="steam" href="https://steamcommunity.com/profiles/{{ p.steam_id }}" target="_blank" rel="noopener">Steam profile ↗</a>{% endif %}
+</header>
+
+<main>
+<div class="pcard">
+    <div class="pcard-sec full"><h4>Overview</h4><div class="kstat-row">
+        <div class="kstat"><b>{{ p.matches }}</b><span>Matches</span></div>
+        <div class="kstat"><b class="{{ 'kd-hi' if p.kd >= 1 else 'kd-lo' }}">{{ '%.2f'|format(p.kd) }}</b><span>K / D</span></div>
+        <div class="kstat"><b>{{ p.adr }}</b><span>ADR</span></div>
+        <div class="kstat"><b>{{ p.hsPct }}%</b><span>HS%</span></div>
+        <div class="kstat"><b>{{ p.utilRating if p.utilRating is not none else '-' }}</b><span>Util Rating</span></div>
+        <div class="kstat"><b class="{{ 'kd-hi' if p.rating is not none and p.rating >= 1 else 'kd-lo' if p.rating is not none else '' }}">{{ p.rating if p.rating is not none else '-' }}</b><span>Rating</span></div>
+        <div class="kstat"><b class="{{ 'kd-hi' if p.winPct >= 50 else 'kd-lo' }}">{{ p.wins }}-{{ p.losses }}</b><span>W-L · {{ p.winPct }}%</span></div>
+    </div></div>
+
+    <div class="pcard-sec"><h4>Maps ({{ p.maps|length }})</h4>
+        {% for m in p.maps %}
+        <div class="mrow">
+            <span class="mname">{{ m.map|map_label }}
+                {% if m.rankLabel %}<span class="mrank" {% if m.rank %}data-rank-type="{{ m.rank.rank_type }}" data-rank="{{ m.rank.rank }}"{% endif %}>{{ m.rankLabel }}</span>{% endif %}
+            </span>
+            <span class="mwl">{{ m.wins }}-{{ m.losses }} · {{ m.winPct }}%</span>
+            <span class="wl-bar"><i style="width:{{ m.winPct }}%"></i></span>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="pcard-sec"><h4>Weapons used</h4>
+        {% if p.weapons %}
+        <table class="wtable">
+            {% for w in p.weapons %}
+            <tr>
+                <td class="wname">{{ w.weapon.replace('weapon_','').replace('_',' ') }}</td>
+                <td class="wnum">{{ w.kills }}k</td>
+                <td class="wacc">{{ w.acc }}%</td>
+                <td class="wnum">{{ w.shots }} shots</td>
+            </tr>
+            {% endfor %}
+        </table>
+        {% else %}
+        <span class="mono" style="color:var(--dimmer)">no shots recorded</span>
+        {% endif %}
+    </div>
+
+    <div class="pcard-sec"><h4>Teammates</h4>
+        {% if p.teammates %}
+        {% for t in p.teammates %}
+        <div class="mrow">
+            <span class="mname" style="text-transform:none">{{ t.name }}</span>
+            <span class="mwl">{{ t.games }}g · {{ t.winPct }}%</span>
+            <span class="wl-bar"><i style="width:{{ t.winPct }}%"></i></span>
+        </div>
+        {% endfor %}
+        {% else %}
+        <span class="mono" style="color:var(--dimmer)">-</span>
+        {% endif %}
+    </div>
+
+    <details class="pcard-sec full"><summary>Highlights</summary>
+        <div id="hl-list" class="hl-list">
+            <span class="mono" style="color:var(--dimmer)">Loading…</span>
+        </div>
+    </details>
+
+    <div class="pcard-sec full"><h4>Timing &amp; Accuracy</h4>
+        {% if p.timing %}
+        {% set rt = p.rankedTiming or {} %}
+        <div class="ow-feat-row">
+            <span class="ofname" title="Time from first spotting the eventual victim to this player's first shot at them">Time to shoot (s)</span>
+            <span class="ofval">{{ '%.2f'|format(p.timing.time_to_shoot) if p.timing.time_to_shoot is not none else '-' }}</span>
+            <span class="ofpct">{% if rt.time_to_shoot is not none %}ranked avg {{ '%.2f'|format(rt.time_to_shoot) }}{% endif %}</span>
+        </div>
+        <div class="ow-feat-row">
+            <span class="ofname" title="Time from first spotting the eventual victim to landing the first hit on them">Time to damage (s)</span>
+            <span class="ofval">{{ '%.2f'|format(p.timing.time_to_damage) if p.timing.time_to_damage is not none else '-' }}</span>
+            <span class="ofpct">{% if rt.time_to_damage is not none %}ranked avg {{ '%.2f'|format(rt.time_to_damage) }}{% endif %}</span>
+        </div>
+        <div class="ow-feat-row">
+            <span class="ofname" title="Time from first spotting the eventual victim to killing them">Time to kill (s)</span>
+            <span class="ofval">{{ '%.2f'|format(p.timing.time_to_kill) if p.timing.time_to_kill is not none else '-' }}</span>
+            <span class="ofpct">{% if rt.time_to_kill is not none %}ranked avg {{ '%.2f'|format(rt.time_to_kill) }}{% endif %}</span>
+        </div>
+        {% if p.timing.spotted_acc %}
+        <div class="ow-feat-note" style="margin-top:8px">Spotted accuracy by weapon type</div>
+        {% for cls, val in p.timing.spotted_acc.items() %}
+        <div class="ow-feat-row">
+            <span class="ofname" title="Hit% among shots fired at this weapon type while the target was already spotted">{{ cls|capitalize }}</span>
+            <span class="ofval">{{ '%.1f'|format(val) }}%</span>
+            <span class="ofpct">{% if rt.spotted_acc and cls in rt.spotted_acc %}ranked avg {{ '%.1f'|format(rt.spotted_acc[cls]) }}%{% endif %}</span>
+        </div>
+        {% endfor %}
+        {% endif %}
+        <div class="ow-feat-note">Averaged across {{ p.timing.matches }} analyzed match{{ '' if p.timing.matches == 1 else 'es' }} · compared to the flat average among players with a rank.</div>
+        {% else %}
+        <span class="ow-feat-note">Not yet analyzed - open this player's Overwatch tab on a match to run the trust analysis.</span>
+        {% endif %}
+    </div>
+
+    <details class="pcard-sec full"><summary>Appears in {{ p.files|length }} demo{{ '' if p.files|length == 1 else 's' }}</summary>
+        <div class="match-links">
+            {% for f in p.files %}<a href="/match?match={{ f|urlencode }}">📊 {{ f[:-5] }}</a>{% endfor %}
+        </div>
+    </details>
+</div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='fmt.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='maps.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='assets.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='assets.js') }}"></script>
+<script src="{{ url_for('static', filename='matchhero.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='match2d.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='match2d.js') }}"></script>
+<script src="{{ url_for('static', filename='utilfx.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='utilfx.js') }}"></script>
+<script src="{{ url_for('static', filename='viewport.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='viewport.js') }}"></script>
+<script src="{{ url_for('static', filename='chunks.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='chunks.js') }}"></script>
+<script src="{{ url_for('static', filename='instantreplay.js') }}"></script>
+<script src="{{ url_for('static', filename='clipbox.js') }}"></script>
+<script src="{{ url_for('static', filename='demojump.js') }}"></script>
+<script src="{{ url_for('static', filename='momentrow.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='momentrow.js') }}"></script>
+<script>
+// Rank badge - the same two-step the players table does. Premier is a rating
+// number and has no skill-group image, so it gets a rating-coloured chip
+// (MatchHeroLogic.rankTier); Competitive and Wingman start from that same chip
+// and upgrade to the real image once the asset manifest confirms one exists.
+// .prank is the page-header badge, .mrank the per-map badges in the Maps
+// section - same markup contract (data-rank-type/data-rank), painted together.
+document.querySelectorAll('.prank[data-rank], .mrank[data-rank]').forEach(el => {
+    const tier = MatchHeroLogic.rankTier(+el.dataset.rankType, +el.dataset.rank);
+    const label = el.textContent.trim();
+    el.innerHTML = `<span class="rank-chip ${tier}" title="${label}">${label}</span>`;
+});
+if (window.Assets) Assets.load().then(ok => {
+    if (!ok) return;
+    document.querySelectorAll('.prank[data-rank], .mrank[data-rank]').forEach(el => {
+        const rt = +el.dataset.rankType, rk = +el.dataset.rank;
+        if (rt !== 12 && rt !== 7) return;
+        const url = Assets.url('skillgroups', rk);
+        const label = el.textContent.trim();
+        if (url) el.innerHTML = `<img class="rank-ico" src="${url}" alt="${label}" title="${label}">`;
+    });
+});
+
+// Cross-match highlight reel: multi-kills/aces, clutch wins, high-impact
+// single kills (analysis/highlights.py), each with an inline Instant Replay
+// preview (static/instantreplay.js) - same widget the Overwatch tab uses.
+const playerName = {{ p.name|tojson }};
+const HL_TYPE_LABEL = { multikill: 'Multi-kill', clutch: 'Clutch', impact_kill: 'Kill' };
+
+// Clip recording, polling and the inline Instant Replay preview all come
+// from the shared static/momentrow.js - the same module the match page's
+// Overwatch/Highlights tabs and the Multi Match Analyser use. Rows here keep
+// their own .hl-row/.hl-media markup and CSS; only the behaviour is shared.
+
+const hlList = document.getElementById('hl-list');
+fetch('/player/' + encodeURIComponent(playerName) + '/highlights')
+    .then(r => r.json())
+    .then(d => {
+        if (!d.ok) { hlList.innerHTML = '<span class="mono" style="color:var(--loss)">Failed to load highlights.</span>'; return; }
+        const rows = d.highlights || [];
+        if (!rows.length) { hlList.innerHTML = '<span class="mono" style="color:var(--dimmer)">No highlights yet.</span>'; return; }
+        // Rows arrive already grouped by match (newest first) and ordered by
+        // priority within each match - clutches, then multi-kills, then
+        // impact kills (analysis/highlights.py's highlight_sort_key), so the
+        // PER_MATCH cap below hides the least interesting rows rather than
+        // whatever happened late in the match. Walk them in order and open a
+        // new group header whenever the match changes.
+        //
+        // Every match the player appears in gets its own group, and the cap
+        // on how many highlights are shown is applied per match (the tail
+        // collapses behind a "show more") rather than to the flat list. A cap
+        // on the whole list would drop late matches entirely for a player with
+        // a long history, rather than shortening each of them.
+        const shown = rows;
+        const groups = [];
+        shown.forEach((h, hi) => {
+            const last = groups[groups.length - 1];
+            if (!last || last.match !== h.match) groups.push({match: h.match, rows: [[h, hi]]});
+            else last.rows.push([h, hi]);
+        });
+        const PER_MATCH = 6;
+
+        hlList.innerHTML = groups.map(g => {
+            const first = g.rows[0][0];
+            const stem = g.match ? g.match.slice(0, -5) : '';
+            const n = g.rows.length;
+            const head = `<div class="hl-group-head">
+                <a class="hl-group-map" href="/match?match=${encodeURIComponent(g.match)}"
+                   title="Open match">${first.match_map || stem}</a>
+                <span class="hl-group-date">${first.match_played_label || ''}</span>
+                <span class="hl-group-count">${n} moment${n === 1 ? '' : 's'}</span>
+            </div>`;
+            // One shared builder for the row markup and its button set
+            // (static/momentrow.logic.js) - the same call the match page's
+            // Highlights tab makes. This page used to hand-build the row and
+            // so shipped only preview/record: no "in CS2", no "in 2D Player".
+            // The per-match cap is applied afterwards, on the rendered rows.
+            const body = g.rows.map(([h, hi]) => MomentRowLogic.rowHtml(h, {
+                idPrefix: 'hl', index: hi, matchFile: h.match,
+                showType: true, typeLabels: HL_TYPE_LABEL,
+                focusPlayer: playerName,
+            })).join('');
+            const more = n > PER_MATCH
+                ? `<button type="button" class="hl-more" data-n="${n - PER_MATCH}">
+                     + show ${n - PER_MATCH} more</button>`
+                : '';
+            return `<div class="hl-group">${head}${body}${more}</div>`;
+        }).join('');
+
+        // Per-match cap, applied to the rendered rows (the shared row builder
+        // renders every row; which ones are visible is this page's concern).
+        hlList.querySelectorAll('.hl-group').forEach(group => {
+            [...group.querySelectorAll('.hl-item')].forEach((row, idx) => {
+                if (idx >= PER_MATCH) { row.classList.add('hl-extra'); row.hidden = true; }
+            });
+        });
+        hlList.querySelectorAll('.hl-more').forEach(btn =>
+            btn.addEventListener('click', () => {
+                const group = btn.closest('.hl-group');
+                const hidden = group.querySelectorAll('.hl-extra');
+                const opening = btn.dataset.open !== '1';
+                // Rows leaving the view must drop any mounted preview/clip
+                // first - same rule the match page's filter follows.
+                hidden.forEach(r => {
+                    if (!opening) MomentRow.teardownRow(hlList, r);
+                    r.hidden = !opening;
+                });
+                btn.dataset.open = opening ? '1' : '';
+                btn.textContent = opening ? '− show less' : `+ show ${btn.dataset.n} more`;
+            }));
+
+        // One delegated call covers preview / record / close for every row,
+        // including the ones a group's "show more" reveals. The match file is
+        // per row (data-file) - this reel spans every match the player is in.
+        MomentRow.wire(hlList, { focusPlayer: playerName });
+        MomentRow.primeClips(hlList, shown, 'hl');
+    })
+    .catch(() => { hlList.innerHTML = '<span class="mono" style="color:var(--loss)">Failed to load highlights.</span>'; });
+</script>
+{% endblock %}

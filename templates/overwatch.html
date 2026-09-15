@@ -1,0 +1,587 @@
+{% extends "_shell.html" %}
+{% block title %}CS2 Stats - Overwatch{% endblock %}
+
+{% block head %}
+<style>
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; padding: 14px 24px; position: sticky; top: 0; z-index: 90; }
+    .topbar-title { font-size: 18px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase; color: white; }
+    .topbar-count { font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+    .topbar-spacer { flex: 1; }
+    .filter-search { background: var(--bg); border: 1px solid var(--border); color: var(--text); font-family: var(--font-ui); font-size: 12px; padding: 6px 8px; min-width: 180px; }
+    .filter-search:focus { outline: none; border-color: var(--accent); }
+    .flag-toggle { font-family: var(--font-ui); font-size: 12px; color: var(--text); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+    .flag-toggle input { accent-color: var(--accent); }
+
+    /* Text colour: content text uses --text (same as the Settings page).
+       --dim/--dimmer are the shell's secondary/tertiary TEXT colours and are
+       now above WCAG AA (7.6:1 / 4.7:1 - they used to be ~2:1, which is why
+       this page pinned everything to --text); they carry the uppercase
+       micro-labels (column heads, panel titles) and empty placeholders. */
+    main { padding: 16px 24px 40px; }
+    .dash-grid { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 18px; align-items: start; }
+    .dash-grid > div { min-width: 0; }
+
+    /* Narrow layouts. The suspects table is 13 nowrap columns (~940px of
+       content); the side panels are a fixed 350px track. Two columns only fit
+       above ~1450px - below that the grid goes single-column, and below
+       ~1050px the table sheds the columns that are context rather than signal
+       (band, matches, kills, Z̄ all reappear in the row's expanded card)
+       instead of being pushed onto a horizontal scrollbar. minmax(0,1fr), not
+       1fr, is what actually lets the single track shrink. */
+    @media (max-width: 1450px) {
+        .dash-grid { grid-template-columns: minmax(0, 1fr); }
+        .footnote { max-width: none; }
+    }
+    @media (max-width: 1050px) {
+        table { font-size: 12px; }
+        thead th, tbody td { padding-left: 6px; padding-right: 6px; }
+        .c-band, .c-zmean { display: none; }
+        .pname { max-width: 160px; }
+        main { padding: 14px 14px 32px; }
+        .scard { padding: 12px 12px 14px 16px; }
+    }
+    @media (max-width: 900px) {
+        .c-matches, .c-kills { display: none; }
+    }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-lg); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th { position: sticky; top: 0; background: var(--panel); text-align: left; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--dim); font-weight: 700; padding: 9px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; user-select: none; z-index: 5; }
+    th.sortable { cursor: pointer; } th.sortable:hover { color: var(--text); }
+    th .arrow { color: var(--accent); font-size: 9px; margin-left: 3px; }
+    th.num, td.num { text-align: right; }
+    tbody td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tbody tr.srow { cursor: pointer; transition: background .12s; }
+    tbody tr.srow:hover { background: var(--panel); }
+    tbody tr.hidden { display: none; }
+    .pname { font-weight: 700; color: white; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+    .mono { font-family: var(--font-mono); }
+    .dimcell { color: var(--dim); }
+    .band-cell { font-family: var(--font-mono); font-size: 12px; color: var(--text); white-space: nowrap; }
+
+    /* Level badges - same palette/classes as the match-page Overwatch tab */
+    .ow-level { font-family: var(--font-ui); font-size: 10px; font-weight: 700;
+                letter-spacing: 1px; padding: 2px 7px; border-radius: var(--radius-sm); border: 1px solid; white-space: nowrap; }
+    .ow-level.low          { color: var(--win);    border-color: rgba(61,220,132,.4);  background: rgba(61,220,132,.08); }
+    .ow-level.elevated     { color: #f0b429;       border-color: rgba(240,180,41,.4);  background: rgba(240,180,41,.08); }
+    .ow-level.high         { color: var(--loss);   border-color: rgba(255,68,85,.5);   background: rgba(255,68,85,.1); }
+    .ow-level.insufficient { color: var(--dim); border-color: var(--border); }
+    .ow-level.verified_pro { color: #64b4ff;       border-color: rgba(100,180,255,.45); background: rgba(100,180,255,.08); }
+    .n-high { color: var(--loss); font-weight: 700; }
+    .n-elev { color: #f0b429; font-weight: 700; }
+    .z-warm { color: #f0b429; } .z-hot { color: var(--loss); }
+
+    /* Label chips */
+    .lbl-chip { font-family: var(--font-ui); font-size: 10px; font-weight: 700; letter-spacing: 1px;
+                padding: 2px 7px; border-radius: var(--radius-sm); border: 1px solid var(--border); color: var(--text); white-space: nowrap; }
+    .lbl-chip.cheater      { color: var(--loss); border-color: rgba(255,68,85,.6);   background: rgba(255,68,85,.12); }
+    .lbl-chip.suspicious   { color: #f0b429;     border-color: rgba(240,180,41,.6);  background: rgba(240,180,41,.12); }
+    .lbl-chip.clean        { color: var(--win);  border-color: rgba(61,220,132,.6);  background: rgba(61,220,132,.12); }
+    .lbl-chip.professional { color: #64b4ff;     border-color: rgba(100,180,255,.6); background: rgba(100,180,255,.12); }
+
+    /* Persistent-indicator pills */
+    .pers-pill { font-family: var(--font-ui); font-size: 11px; padding: 1px 6px;
+                 border: 1px solid rgba(255,68,85,.45); color: var(--loss); background: rgba(255,68,85,.07);
+                 border-radius: var(--radius-pill); margin: 1px 3px 1px 0; white-space: nowrap; display: inline-block; }
+    .pers-more { font-family: var(--font-ui); font-size: 11px; color: var(--text); }
+
+    /* ── Expanded cross-match card ── */
+    .expand td { background: var(--bg); padding: 0; }
+    .scard { padding: 14px 18px 18px 38px; }
+    .scard-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+    .card-band { color: var(--text); }
+    .scard-head a.steam { font-family: var(--font-ui); font-size: 12px; color: var(--text); text-decoration: none; }
+    .scard-head a.steam:hover { color: var(--accent); text-decoration: underline; }
+    .ow-lbl-btn { font-family: var(--font-ui); font-size: 11px; letter-spacing: 1px;
+                  padding: 3px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+                  background: transparent; color: var(--text); cursor: pointer; transition: all .15s; }
+    .ow-lbl-btn:hover               { color: var(--text); border-color: var(--dim); }
+    .ow-lbl-btn.active-clean        { color: var(--win);  border-color: rgba(61,220,132,.6);  background: rgba(61,220,132,.12); }
+    .ow-lbl-btn.active-suspicious   { color: #f0b429;     border-color: rgba(240,180,41,.6);  background: rgba(240,180,41,.12); }
+    .ow-lbl-btn.active-cheater      { color: var(--loss); border-color: rgba(255,68,85,.6);   background: rgba(255,68,85,.12); }
+    .ow-lbl-btn.active-professional { color: #64b4ff;     border-color: rgba(100,180,255,.6); background: rgba(100,180,255,.12); }
+    .lbl-note { font-family: var(--font-ui); font-size: 11px; color: var(--text); }
+
+    .mtable { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; }
+    .mtable th { position: static; font-size: 10px; padding: 4px 8px; background: transparent; }
+    .mtable td { padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    .mtable td.feats { white-space: normal; color: var(--text); }
+    .mtable a { color: var(--accent); text-decoration: none; }
+    .mtable a:hover { text-decoration: underline; }
+
+    /* ── Side panels ── */
+    .panel { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
+             overflow: hidden; margin-bottom: 18px; }
+    .panel h3 { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim);
+                font-weight: 700; padding: 10px 14px; border-bottom: 1px solid var(--border);
+                background: rgba(255,255,255,.015); }
+    .panel-body { padding: 10px 14px 12px; }
+    .panel-note { font-family: var(--font-ui); font-size: 11px; color: var(--text); line-height: 1.6; margin-top: 8px; }
+    .lrow { display: flex; align-items: center; gap: 8px; font-family: var(--font-ui);
+            font-size: 12px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .lrow:last-child { border-bottom: none; }
+    .lrow .lname { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lrow .lname a { color: inherit; text-decoration: none; }
+    .lrow .lname a:hover { color: var(--accent); }
+    .lrow .lmeta { color: var(--text); font-size: 11px; white-space: nowrap; }
+    .lrow .lclear { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 12px; padding: 0 2px; }
+    .lrow .lclear:hover { color: var(--loss); }
+    .llist { max-height: 300px; overflow-y: auto; }
+
+    .btable { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; }
+    .btable td { padding: 3px 4px; border-bottom: none; }
+    .btable td.bnum { text-align: right; color: var(--text); }
+    .thin-mark { color: #f0b429; font-size: 11px; }
+    .blist { max-height: 260px; overflow-y: auto; }
+
+    .cov-row { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 11px; padding: 3px 0; }
+    .cov-row b { color: white; font-weight: 700; }
+
+    .footnote { font-family: var(--font-ui); font-size: 12px; color: var(--text); margin-top: 20px; line-height: 1.7; max-width: 960px; }
+
+    /* Premier rating tiers on the rank-band cells. The colours themselves are
+       static/rankbadge.css's, so this page and every rank badge in the app
+       share one palette; only the rules are repeated, because they have to be
+       declared after .band-cell / .bband / .card-band to win on equal
+       specificity. The class is server-assigned (app.py `_ow_band_tier`) and
+       empty for Competitive/Wingman skill groups. */
+    .p-gray   { color: var(--rank-p-gray); }
+    .p-lblue  { color: var(--rank-p-lblue); }
+    .p-blue   { color: var(--rank-p-blue); }
+    .p-purple { color: var(--rank-p-purple); }
+    .p-pink   { color: var(--rank-p-pink); }
+    .p-red    { color: var(--rank-p-red); }
+    .p-gold   { color: var(--rank-p-gold); }
+
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--text); }
+    .empty-state .big { font-size: 44px; font-weight: 800; letter-spacing: 6px; color: var(--dimmer); display: block; margin-bottom: 10px; }
+    .empty-state p { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; }
+
+    /* Per-match moments list + Instant Replay mini-widget (static/instantreplay.js) -
+       visibility is controlled by the parent <tr class="mrow-detail"> instead of this
+       element's own display, since it's shown/hidden as part of the table row. */
+    .mrow-moments { display:flex; flex-direction:column; gap:3px; margin:6px 0 10px; padding:8px 10px;
+                    background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-md); }
+    .mrow-moment { display:flex; gap:10px; align-items:center; font-family:var(--font-narrow); font-size:11px; }
+    .mrow-moment .m-round  { color:var(--dim); min-width:28px; font-size:10px; }
+    .mrow-moment .m-label  { color:var(--text); min-width:90px; }
+    .mrow-moment .m-detail { color:var(--text); flex:1; }
+    .ir-toggle { font-family:var(--font-ui); font-size:10px; color:var(--accent);
+                 background:none; border:1px solid var(--border); border-radius: var(--radius-sm); padding:2px 6px;
+                 cursor:pointer; white-space:nowrap; }
+    .ir-toggle:hover { border-color:var(--accent); }
+    .ir-mount { margin:6px 0 2px; }
+    .instant-replay { display:inline-flex; flex-direction:column; gap:6px; background:var(--panel, var(--surface));
+                       border:1px solid var(--border-soft); border-radius:var(--radius-md); padding:8px; }
+    .ir-canvas { display:block; width:220px; height:220px; background:var(--bg); border-radius:var(--radius-sm); }
+    .ir-controls { display:flex; align-items:center; gap:8px; }
+    .ir-btn { font-family:var(--font-ui); font-size:12px; color:var(--text);
+              background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-md);
+              width:26px; height:22px; cursor:pointer; }
+    .ir-btn:hover { border-color:var(--accent); }
+    .ir-status { font-family:var(--font-ui); font-size:10px; color:var(--text); }
+    .ir-caption { font-family:var(--font-ui); font-size:10px; color:var(--text); max-width:220px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<header class="topbar">
+    <span class="topbar-title">Overwatch</span>
+    <span class="topbar-count">{{ dash.suspects|length }} player{% if dash.suspects|length != 1 %}s{% endif %}
+        across {{ dash.coverage.analyzed }}/{{ dash.coverage.total }} analyzed match{% if dash.coverage.total != 1 %}es{% endif %}</span>
+    <div class="topbar-spacer"></div>
+    <label class="flag-toggle"><input type="checkbox" id="flagged-only"> flagged only</label>
+    <input type="text" class="filter-search" id="ssearch" placeholder="Search player…" autocomplete="off">
+</header>
+
+<main>
+{% if dash.suspects %}
+<div class="dash-grid">
+<div>
+    <div class="table-wrap">
+        <table id="stable">
+            <thead>
+                <tr>
+                    <th style="width:24px"></th>
+                    <th class="sortable" data-sort="name">Player<span class="arrow"></span></th>
+                    <th>Label</th>
+                    <th class="c-band">Band</th>
+                    <th class="sortable num c-matches" data-sort="matches">Matches<span class="arrow"></span></th>
+                    <th class="sortable num c-kills" data-sort="kills">Kills<span class="arrow"></span></th>
+                    <th>Peak</th>
+                    <th class="sortable num" data-sort="high" title="Matches at HIGH - REVIEW">H<span class="arrow"></span></th>
+                    <th class="sortable num" data-sort="elev" title="Matches at ELEVATED">E<span class="arrow"></span></th>
+                    <th title="Indicators ≥99th percentile in ≥2 matches (with ≥15 kills each)">Persistent indicators</th>
+                    <th class="sortable num c-zmean" data-sort="zmean" title="Mean composite suspicious z across matches">Z̄<span class="arrow"></span></th>
+                    <th class="sortable num" data-sort="zmax" title="Max composite suspicious z">Zmax<span class="arrow"></span></th>
+                    <th class="sortable num" data-sort="priority">Priority<span class="arrow">▼</span></th>
+                </tr>
+            </thead>
+            <tbody id="srows">
+                {% for s in dash.suspects %}
+                <tr class="srow" data-sid="{{ s.steam_id }}" data-name="{{ s.name|lower }}"
+                    data-matches="{{ s.matches }}" data-kills="{{ s.kills }}"
+                    data-high="{{ s.n_high }}" data-elev="{{ s.n_elevated }}"
+                    data-zmean="{{ s.z_mean }}" data-zmax="{{ s.z_max }}"
+                    data-priority="{{ s.priority }}"
+                    data-flagged="{{ 1 if (s.n_high or s.n_elevated or s.persistent) else 0 }}">
+                    <td class="mono" style="color:var(--dim)">▸</td>
+                    <td class="pname" title="{{ s.name }}">{{ s.name }}</td>
+                    <td>{% if s.label %}<span class="lbl-chip {{ s.label }}">{{ s.label }}</span>{% else %}<span class="mono dimcell">-</span>{% endif %}</td>
+                    <td class="band-cell c-band {{ s.band_tier }}" title="Rank band - Premier tiers use the in-game rating colours">{{ s.band_label }}</td>
+                    <td class="num mono c-matches">{{ s.matches }}</td>
+                    <td class="num mono c-kills">{{ s.kills }}</td>
+                    <td><span class="ow-level {{ s.peak_level }}">{{ {'high':'HIGH','elevated':'ELEV','low':'LOW','insufficient':'N/A','verified_pro':'PRO'}.get(s.peak_level, s.peak_level) }}</span></td>
+                    <td class="num mono {% if s.n_high %}n-high{% else %}dimcell{% endif %}">{{ s.n_high or '·' }}</td>
+                    <td class="num mono {% if s.n_elevated %}n-elev{% else %}dimcell{% endif %}">{{ s.n_elevated or '·' }}</td>
+                    <td>
+                        {%- for f in s.persistent[:3] %}<span class="pers-pill">{{ f.label }} ×{{ f.n }}</span>{% endfor -%}
+                        {%- if s.persistent|length > 3 %}<span class="pers-more">+{{ s.persistent|length - 3 }} more</span>{% endif -%}
+                        {%- if not s.persistent %}<span class="mono dimcell">-</span>{% endif -%}
+                    </td>
+                    <td class="num mono c-zmean {% if s.z_mean >= 4 %}z-hot{% elif s.z_mean >= 2.5 %}z-warm{% endif %}">{{ '%.1f'|format(s.z_mean) }}</td>
+                    <td class="num mono {% if s.z_max >= 4 %}z-hot{% elif s.z_max >= 2.5 %}z-warm{% endif %}">{{ '%.1f'|format(s.z_max) }}</td>
+                    <td class="num mono dimcell">{{ '%.0f'|format(s.priority) }}</td>
+                </tr>
+                <tr class="expand" data-sid="{{ s.steam_id }}" style="display:none">
+                    <td colspan="13"><div class="scard-host"><span class="mono" style="color:var(--text);padding:14px 38px;display:block">Loading…</span></div></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="empty-state" id="no-results" style="display:none"><span class="big">NO PLAYERS</span><p>No players match the filter</p></div>
+    <p class="footnote">Priority ranks cross-match <b>persistence</b> (same indicator ≥99th percentile for the player's rank band in ≥2 matches) above one-off spikes, then per-match HIGH/ELEVATED counts and anomaly magnitude. Everything here is <b>evidence for review, never a verdict</b> - legit players hit outliers too, and soft-cheat signal only becomes meaningful when aggregated over many matches (~70+ kills). Labeled professionals and pro matches are pinned to priority 0. Expand a row for pooled cross-match evidence (own-history confidence interval) on each persistent indicator.</p>
+</div>
+
+<div>
+    <div class="panel">
+        <h3>Labels</h3>
+        <div class="panel-body">
+            {% if dash.labels %}
+            <div class="llist" id="label-list">
+                {% for l in dash.labels %}
+                <div class="lrow" data-sid="{{ l.steam_id }}">
+                    <span class="lbl-chip {{ l.label }}">{{ l.label }}</span>
+                    <span class="lname"><a href="https://steamcommunity.com/profiles/{{ l.steam_id }}" target="_blank" rel="noopener" title="Steam profile - {{ l.steam_id }}">{{ l.name }}</a></span>
+                    <span class="lmeta">{{ l.matches }} match{% if l.matches != 1 %}es{% endif %}</span>
+                    <button class="lclear" title="Remove label" data-sid="{{ l.steam_id }}" data-name="{{ l.name }}">✕</button>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <span class="mono" style="color:var(--text);font-size:11px">No players labeled yet - label from a match's Overwatch tab or from an expanded row here.</span>
+            {% endif %}
+            {% if dash.pro_matches %}
+            <div class="panel-note" style="margin-top:12px">Pro matches ({{ dash.pro_matches|length }}):
+                {% for m in dash.pro_matches %}<a href="/match?match={{ (m + '.json')|urlencode }}&tab=overwatch" style="color:var(--accent);text-decoration:none">{{ m }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+            </div>
+            {% endif %}
+            <div class="panel-note">Label changes from this page update labels.json immediately; each match re-scores against the adjusted baselines the next time its Overwatch tab recomputes.</div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h3>Baseline health</h3>
+        <div class="panel-body">
+            {% if dash.baseline.bands %}
+            <div class="blist">
+            <table class="btable">
+                <tr><td class="bband" style="color:var(--dim);font-size:9px;text-transform:uppercase">Rank band</td>
+                    <td class="bnum" style="font-size:9px;text-transform:uppercase">Samples</td>
+                    <td class="bnum" style="font-size:9px;text-transform:uppercase">Players</td>
+                    <td class="bnum" style="font-size:9px;text-transform:uppercase">Matches</td></tr>
+                {% for b in dash.baseline.bands %}
+                <tr>
+                    <td class="bband {{ b.tier }}">{{ b.label }} {% if b.thin %}<span class="thin-mark" title="Below the {{ dash.baseline.min_baseline }}-sample flag gate - percentiles for this band fall back to sibling/mode pools">⚠</span>{% endif %}</td>
+                    <td class="bnum">{{ b.samples }}</td>
+                    <td class="bnum">{{ b.players }}</td>
+                    <td class="bnum">{{ b.matches }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+            </div>
+            {% else %}
+            <span class="mono" style="color:var(--text);font-size:11px">No baselines yet - they accumulate as matches are analyzed.</span>
+            {% endif %}
+            <div class="panel-note">⚠ = fewer than {{ dash.baseline.min_baseline }} samples: that band's percentile flags are gated off and scoring falls back to sibling-tier pools.</div>
+            <div class="panel-note">
+                Cheater reference pool: <b style="color:var(--text)">{{ dash.baseline.cheat_players }}</b> confirmed player(s), {{ dash.baseline.cheat_samples }} samples{% if dash.baseline.cheat_players == 0 %} - label a cheater to start one{% endif %}.<br>
+                Suspicious pool (planned): {{ dash.baseline.suspicious_labeled }}/5 labeled needed.<br>
+                Verified-clean pool (planned): {{ dash.baseline.clean_labeled }}/5 labeled needed.
+            </div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h3>Coverage</h3>
+        <div class="panel-body">
+            <div class="cov-row"><span>Matches analyzed</span><b>{{ dash.coverage.analyzed }} / {{ dash.coverage.total }}</b></div>
+            {% if dash.coverage.raw_only %}<div class="cov-row"><span>Raw-extracted, not yet scored</span><b>{{ dash.coverage.raw_only }}</b></div>{% endif %}
+            {% if dash.coverage.unanalyzed %}<div class="cov-row"><span>Not yet analyzed</span><b>{{ dash.coverage.unanalyzed }}</b></div>
+            <div class="panel-note">A match is analyzed the first time its Overwatch tab is opened (new uploads analyze automatically in the background).</div>{% endif %}
+        </div>
+    </div>
+</div>
+</div>
+{% else %}
+<div class="empty-state"><span class="big">NO ANALYSIS</span><p>Open a match's Overwatch tab to analyze it - results aggregate here</p></div>
+{% endif %}
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='fmt.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='maps.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='match2d.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='match2d.js') }}"></script>
+<script src="{{ url_for('static', filename='utilfx.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='utilfx.js') }}"></script>
+<script src="{{ url_for('static', filename='viewport.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='viewport.js') }}"></script>
+<script src="{{ url_for('static', filename='chunks.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='chunks.js') }}"></script>
+<script src="{{ url_for('static', filename='instantreplay.js') }}"></script>
+<script src="{{ url_for('static', filename='momentrow.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='momentrow.js') }}"></script>
+<script>
+const state = { sort: 'priority', dir: 'desc', search: '', flaggedOnly: false };
+const numeric = ['matches', 'kills', 'high', 'elev', 'zmean', 'zmax', 'priority'];
+const tbody = document.getElementById('srows');
+const esc = FmtLogic.esc;
+
+function apply() {
+    if (!tbody) return;
+    const groups = [];
+    [...tbody.querySelectorAll('.srow')].forEach(row => groups.push([row, row.nextElementSibling]));
+    let visible = 0;
+    groups.forEach(([row, exp]) => {
+        const show = (!state.search || row.dataset.name.includes(state.search))
+                  && (!state.flaggedOnly || row.dataset.flagged === '1');
+        row.classList.toggle('hidden', !show);
+        if (!show && exp) exp.style.display = 'none';
+        if (show) visible++;
+    });
+    groups.sort(([a], [b]) => {
+        if (numeric.includes(state.sort)) {
+            const av = Number(a.dataset[state.sort]) || 0, bv = Number(b.dataset[state.sort]) || 0;
+            return state.dir === 'asc' ? av - bv : bv - av;
+        }
+        const av = a.dataset[state.sort] || '', bv = b.dataset[state.sort] || '';
+        return state.dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+    groups.forEach(([row, exp]) => { tbody.appendChild(row); if (exp) tbody.appendChild(exp); });
+    const nores = document.getElementById('no-results');
+    if (nores) nores.style.display = visible === 0 ? 'block' : 'none';
+    document.querySelectorAll('#stable th.sortable').forEach(th => {
+        const ar = th.querySelector('.arrow');
+        ar.textContent = th.dataset.sort === state.sort ? (state.dir === 'asc' ? '▲' : '▼') : '';
+    });
+}
+document.querySelectorAll('#stable th.sortable').forEach(th => th.addEventListener('click', () => {
+    const k = th.dataset.sort;
+    if (state.sort === k) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+    else { state.sort = k; state.dir = k === 'name' ? 'asc' : 'desc'; }
+    apply();
+}));
+document.getElementById('ssearch')?.addEventListener('input', e => { state.search = e.target.value.trim().toLowerCase(); apply(); });
+document.getElementById('flagged-only')?.addEventListener('change', e => { state.flaggedOnly = e.target.checked; apply(); });
+
+// ── Expanded cross-match card (lazy, /overwatch/dashboard/player) ────────────
+const LEVEL_TXT = {high:'HIGH', elevated:'ELEV', low:'LOW', insufficient:'N/A', verified_pro:'PRO'};
+
+function buildCard(p) {
+    const rows = (p.match_rows || []).map((m, ri) => {
+        const feats = (m.flags99 || []).map(esc).join(', ') || '-';
+        const pro = m.is_pro_match ? ' <span class="lbl-chip professional">pro match</span>' : '';
+        const rid = `${esc(p.steam_id)}-${ri}`;
+        const momentsCell = m.moments > 0
+            ? `<button type="button" class="ir-toggle" data-mrow="${rid}"
+                 data-file="${esc(m.file)}" data-steam="${esc(p.steam_id)}">${m.moments} ▾</button>`
+            : m.moments;
+        return `<tr>
+            <td>${esc(m.played_label)}</td>
+            <td>${esc(MapsLogic.label(m.map))}${pro}</td>
+            <td><span class="ow-level ${esc(m.level)}">${LEVEL_TXT[m.level] || esc(m.level)}</span></td>
+            <td style="text-align:right">${(+m.z).toFixed(1)}</td>
+            <td style="text-align:right">${m.kills}</td>
+            <td class="feats">${feats}</td>
+            <td style="text-align:right">${momentsCell}</td>
+            <td><a href="/match?match=${encodeURIComponent(m.file)}&tab=overwatch" title="Open this match's Overwatch tab">📊 overwatch</a>
+                <a href="/viewer?match=${encodeURIComponent(m.file)}" title="2D replay">▶</a></td>
+        </tr>
+        <tr class="mrow-detail" id="mrow-${rid}" style="display:none">
+            <td colspan="8"><div class="mrow-moments" id="mrow-moments-${rid}"></div></td>
+        </tr>`;
+    }).join('');
+    const lblBtns = ['clean', 'suspicious', 'cheater', 'professional'].map(v => {
+        const active = p.label === v ? ' active-' + v : '';
+        const icons = {clean: '✓ Clean', suspicious: '? Suspicious', cheater: '✗ Cheater', professional: '★ Pro'};
+        return `<button class="ow-lbl-btn${active}" data-val="${v}">${icons[v]}</button>`;
+    }).join('');
+    // Pooled evidence: for each persistent (≥2-match) indicator, this
+    // player's own value re-estimated from every *other* analyzed match
+    // they appear in - a tight pooled CI over many matches is stronger
+    // corroboration than a single-match flag alone. Cached inside each
+    // match's analysis (analysis/overwatch.py), just read here.
+    const pooledRows = (p.persistent || []).filter(f => f.pooled).map(f => {
+        const pl = f.pooled;
+        const ciTxt = pl.ci ? `[${pl.ci[0]}–${pl.ci[1]}]` : '-';
+        const pctTxt = pl.percentile != null ? pl.percentile.toFixed(1) + 'th' : '-';
+        return `<tr>
+            <td>${esc(f.label)}</td>
+            <td style="text-align:right">${f.n}</td>
+            <td style="text-align:right">${pl.n_matches}</td>
+            <td style="text-align:right">${pl.n_pool}</td>
+            <td style="text-align:right">${pctTxt}</td>
+            <td class="mono" style="text-align:right;font-size:10px;color:var(--text)">${ciTxt}</td>
+        </tr>`;
+    }).join('');
+    const pooledSection = pooledRows ? `
+        <div class="ow-group-title" style="margin-top:10px">Pooled evidence (own history, excludes each flagged match)</div>
+        <table class="mtable">
+            <tr><th>Indicator</th><th style="text-align:right">Flagged in</th><th style="text-align:right">Pooled over</th><th style="text-align:right">Events</th><th style="text-align:right">Pooled %ile</th><th style="text-align:right">95% CI</th></tr>
+            ${pooledRows}
+        </table>` : '';
+    return `<div class="scard">
+        <div class="scard-head">
+            <a class="steam" href="https://steamcommunity.com/profiles/${esc(p.steam_id)}" target="_blank" rel="noopener">${esc(p.steam_id)} ↗</a>
+            <span class="mono card-band" style="font-size:11px"><span class="${p.band_tier || ''}">${esc(p.band_label)}</span> · ${p.matches} matches · ${p.kills} kills</span>
+            <span style="flex:1"></span>
+            ${lblBtns}
+            <span class="lbl-note">applies at each match's next re-score</span>
+        </div>
+        <table class="mtable">
+            <tr><th>Played</th><th>Map</th><th>Level</th><th style="text-align:right">Z</th><th style="text-align:right">Kills</th><th>≥99th-pct indicators</th><th style="text-align:right">Moments</th><th></th></tr>
+            ${rows}
+        </table>
+        ${pooledSection}
+    </div>`;
+}
+
+function setLabel(host, srow, p, val) {
+    const newLabel = p.label === val ? null : val;
+    fetch('/overwatch/label', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ steam_id: p.steam_id, name: p.name, label: newLabel }),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (!d.ok) { console.error('label error', d); return; }
+        p.label = d.label;
+        ['clean', 'suspicious', 'cheater', 'professional'].forEach(v => {
+            const b = host.querySelector(`.ow-lbl-btn[data-val="${v}"]`);
+            if (b) b.classList.toggle('active-' + v, d.label === v);
+        });
+        const cell = srow.children[2];
+        cell.innerHTML = d.label ? `<span class="lbl-chip ${d.label}">${d.label}</span>`
+                                 : '<span class="mono dimcell">-</span>';
+    })
+    .catch(e => console.error('label fetch failed', e));
+}
+
+tbody?.addEventListener('click', e => {
+    if (e.target.closest('a, button')) return;
+    const row = e.target.closest('.srow');
+    if (!row) return;
+    const exp = row.nextElementSibling;
+    if (!exp || !exp.classList.contains('expand')) return;
+    const open = exp.style.display !== 'none';
+    exp.style.display = open ? 'none' : '';
+    row.querySelector('td').textContent = open ? '▸' : '▾';
+    if (!open && !exp.dataset.loaded) {
+        exp.dataset.loaded = '1';
+        const host = exp.querySelector('.scard-host');
+        fetch('/overwatch/dashboard/player?steam_id=' + encodeURIComponent(exp.dataset.sid))
+            .then(r => r.ok ? r.json() : null)
+            .then(d => {
+                if (!d || !d.ok) { host.innerHTML = '<span class="mono" style="color:var(--loss);padding:14px 38px;display:block">Failed to load.</span>'; return; }
+                host.innerHTML = buildCard(d.player);
+                host.querySelectorAll('.ow-lbl-btn').forEach(btn =>
+                    btn.addEventListener('click', () => setLabel(host, row, d.player, btn.dataset.val)));
+            })
+            .catch(() => { host.innerHTML = '<span class="mono" style="color:var(--loss);padding:14px 38px;display:block">Failed to load.</span>'; });
+    }
+});
+
+// ── Per-match moment list + Instant Replay preview (lazy /overwatch?match=) ──
+const _owMatchCache = new Map();   // file -> Promise<overwatch result>
+function fetchOwMatch(file) {
+    if (!_owMatchCache.has(file)) {
+        _owMatchCache.set(file, fetch('/overwatch?match=' + encodeURIComponent(file)).then(r => r.json()));
+    }
+    return _owMatchCache.get(file);
+}
+
+// The inline preview is the shared static/momentrow.js one. This page has no
+// record button and doesn't load clipbox.js, so MomentRow falls through to
+// InstantReplay's default size - exactly the behaviour this page already had.
+// `tbody` is the scope root: moment rows only ever live inside that table.
+function toggleInlinePreview(btn) {
+    MomentRow.togglePreview(tbody, btn, {});
+}
+
+tbody?.addEventListener('click', e => {
+    const previewBtn = e.target.closest('.ir-toggle[data-mid]');
+    if (previewBtn) { toggleInlinePreview(previewBtn); return; }
+
+    const toggle = e.target.closest('.ir-toggle[data-mrow]');
+    if (!toggle) return;
+    const rid = toggle.dataset.mrow;
+    const detailRow = document.getElementById('mrow-' + rid);
+    const holder = document.getElementById('mrow-moments-' + rid);
+    if (!detailRow || !holder) return;
+
+    const isOpen = detailRow.style.display !== 'none';
+    detailRow.style.display = isOpen ? 'none' : '';
+    if (isOpen || holder.dataset.loaded === '1') return;
+    holder.dataset.loaded = '1';
+    holder.textContent = 'Loading…';
+
+    fetchOwMatch(toggle.dataset.file).then(d => {
+        const player = (d.players || []).find(pp => pp.steam_id === toggle.dataset.steam);
+        const moments = player ? (player.moments || []) : [];
+        if (!moments.length) { holder.textContent = 'No moment detail available.'; return; }
+        holder.innerHTML = moments.map((m, mi) => {
+            const rd = m.round != null ? 'R' + m.round : '·';
+            const mid = `${rid}-${mi}`;
+            const hasWindow = m.start_tick != null && m.end_tick != null;
+            const previewBtn2 = hasWindow ? `<button type="button" class="ir-toggle" data-mid="${mid}"
+                data-file="${esc(toggle.dataset.file)}" data-start="${m.start_tick}" data-end="${m.end_tick}"
+                data-focus="${encodeURIComponent(player.name)}"
+                data-caption="${encodeURIComponent(m.label + ' - ' + m.detail)}">▶ preview</button>` : '';
+            return `<div class="mrow-moment">
+                <span class="m-round">${rd}</span>
+                <span class="m-label">${esc(m.label)}</span>
+                <span class="m-detail">${esc(m.detail)}</span>
+                ${previewBtn2}
+            </div>
+            <div class="ir-mount" id="ir-${mid}" style="display:none"></div>`;
+        }).join('');
+    }).catch(() => { holder.textContent = 'Failed to load moment detail.'; });
+});
+
+// ── Label console: clear a label (labels.json only; re-scores lazily) ────────
+document.getElementById('label-list')?.addEventListener('click', e => {
+    const btn = e.target.closest('.lclear');
+    if (!btn) return;
+    fetch('/overwatch/label', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ steam_id: btn.dataset.sid, name: btn.dataset.name, label: null }),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (!d.ok) { console.error('label error', d); return; }
+        btn.closest('.lrow')?.remove();
+        // Reflect in the main table if that player has a row.
+        const srow = tbody?.querySelector(`.srow[data-sid="${CSS.escape(btn.dataset.sid)}"]`);
+        if (srow) srow.children[2].innerHTML = '<span class="mono dimcell">-</span>';
+    })
+    .catch(err => console.error('label fetch failed', err));
+});
+
+apply();
+</script>
+{% endblock %}

@@ -1,0 +1,7 @@
+# Desktop build only (desktop.py + desktop.spec + tools/build_desktop.py).
+# The app itself needs just requirements.txt - `python serve.py` in a browser
+# never imports these. PyInstaller cannot build from Microsoft Store Python;
+# make this venv from a python.org install.
+-r requirements.txt
+pywebview>=6.2
+pyinstaller>=6.22

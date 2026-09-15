@@ -1,0 +1,910 @@
+{% extends "_shell.html" %}
+{% block title %}CS2 Match Viewer{% endblock %}
+{% block head %}
+    <style>
+        /* This page keeps a deliberate theme of its own - a blue --accent
+           instead of the shell's cyan, plus --text-dim, which only the two
+           canvas pages use. It must NOT fork the surface ramp: those tokens
+           are tuned as a set (see _shell.html), so a stale copy here would
+           leave the replayer and the analyser flat while every other page
+           got the lift. Colours that are genuinely this page's identity
+           belong here; the ramp is the shell's. */
+        :root {
+            --ct: #4a9eff;
+            --t: #ffaa22;
+            --text: #c8d0dc;
+            --text-dim: #8a9ab0;
+            --accent: #4a9eff;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-ui);
+            min-height: 100vh;
+        }
+        /* The rail shell hosts page content inside .app-content; this page used
+           to center its column on <body>, so re-apply that centering here. */
+        .app-content {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* Hero band - copied verbatim from the stats page (templates/match.html
+           .hero rules) so the map icon/name, avg-rank pill and meta-pills are
+           pixel-identical across pages, not just similar. Full-bleed (no
+           max-width), lighter --surface tone lifts it off the page background.
+           Map icon/name/mode on the left, the live playback readout (#meta)
+           next to it, static match totals (avg rank / rounds / kills / dmg,
+           static/matchhero.js) pushed right. */
+        header.hero {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 32px;
+            flex-wrap: wrap;
+            padding: 22px 32px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 18px;
+        }
+        .hero-map { background: var(--panel); border-radius: var(--radius-md); padding: 10px 18px; }
+        .hero-map-ico { height: 44px; width: auto; display: block; margin-bottom: 6px; }
+        .hero-map-name { font-size: 28px; font-weight: 800; letter-spacing: 2px; text-transform: uppercase; color: white; line-height: 1; }
+        .hero-map-sub  { font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: var(--dim); margin-top: 3px; }
+        .hero-pills { display: flex; flex-direction: column; gap: 5px; margin-left: auto; }
+        .meta-pill { font-family: var(--font-mono); font-size: 11px; letter-spacing: 1px; color: var(--dim); background: var(--panel); border-radius: var(--radius-sm); padding: 3px 10px; }
+        #hero-rank { display: flex; align-items: center; gap: 8px; --rank-badge-h: 26px; }
+        #hero-rank .hero-rank-cap { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); }
+
+        /* The page's name, at the head of the live readout. It used to be an
+           <h1> above the canvas, which cost the map a 32px row on a page that
+           has to fit the window. */
+        .hero-page {
+            font-size: 11px; font-weight: 800; letter-spacing: 3px;
+            text-transform: uppercase; color: var(--text); white-space: nowrap;
+            padding-right: 12px; margin-right: 4px; border-right: 1px solid var(--border);
+        }
+        /* Live playback readout (round/time) - same .meta-pill styling as the
+           match-summary pills so the whole hero band reads as one component;
+           these two just update every frame instead of once on load. */
+        #meta { display: flex; gap: 8px; align-items: center; }
+        #meta .meta-pill span { color: var(--text); }
+        /* Reserve room for the widest value each counter will ever show, so
+           #meta's rendered width is constant from the first frame on - not
+           "however wide today's round/time happen to be". Without this,
+           ROUND ticking past a single digit (round 10+) and TIME ticking
+           past a single-digit minute (10:00+, ~10 minutes into any normal
+           match) each widen #meta by about one monospace character; since
+           .hero-pills is pinned to the row's right edge (margin-left: auto,
+           not responsive to #meta's width), that growth silently eats into
+           the gap between them every frame until the two collide - a bug
+           that gets WORSE the longer playback runs, on any window width
+           where they still share a row. */
+        /* px, not ch: .meta-pill's letter-spacing (1px, between every
+           character) adds width `ch` doesn't know about, so "15" measured
+           2px wider than a naive 2ch and made the reservation leak. Measured
+           against the real rendered font: pad well past that. */
+        #roundLabel { display: inline-block; min-width: 18px; text-align: right; }  /* "1" .. "24"+ */
+        #timeLabel  { display: inline-block; min-width: 44px; text-align: right; }  /* "0:00" .. "10:20"+ */
+
+        .main-layout {
+            display: flex;
+            gap: 14px;
+            align-items: flex-start;
+            /* When the height cap shrinks the map below full width, keep the
+               map + sidebar pair centered instead of leaving a gap on the right */
+            justify-content: center;
+            width: 100%;
+            max-width: 1500px;
+        }
+
+        /* Fluid map: shrinks with the viewport (half-screen windows) but never
+           exceeds 756px or the height the window has left once the hero band,
+           the round nav and the playback controls are on screen.
+           The canvas renders at 1024x1024 internally; CSS only scales it. */
+        .map-col {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            /* The canvas is the hero: guarantee it a large share of the row so
+               the team panels can never dwarf it (they step down via the
+               responsive tiers below instead).
+               Bounded by 100% as well as by 50vw - 50vw alone is a *viewport*
+               measure that ignores the rail, the gaps and the panels, so below
+               ~900px it demanded more width than the row actually had and the
+               right-hand team panel was pushed off the page. */
+            min-width: min(50vw, 430px, 100%);
+            /* Height guard: --fit-col is MEASURED by static/fitview.js so the
+               whole page - controls included - fits the window. The calc() is
+               only the no-JS fallback; it used to be the guard itself, and its
+               hardcoded 200px left the playback controls entirely below the
+               fold on a Surface (1368x830) and 177px short even at 1920x1000. */
+            max-width: min(756px, var(--fit-col, max(520px, calc(100vh - 200px))));
+        }
+        #map-wrap {
+            position: relative;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            aspect-ratio: 1 / 1;
+            border: 1px solid var(--border-soft);
+            border-radius: var(--radius-lg);
+            background: var(--bg);
+        }
+
+        #loading {
+            position: absolute;
+            inset: 0;
+            border-radius: var(--radius-lg);   /* matches the canvas it covers */
+            background: rgba(10,12,15,0.92);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            letter-spacing: 4px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+        }
+
+        /* Team panels - one team fixed on each side of the map (§2). Content-
+           height (not stretched to the map): only as tall as the roster needs. */
+        .team-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            /* One FIXED width (not a min/max range) so the box never resizes as
+               loadouts change during playback. Sized to fit the full loadout
+               (primary + pistol + armor + 4 nades + carry) with breathing room. */
+            width: 320px;
+            min-width: 320px;
+            max-width: 320px;
+            align-self: flex-start;   /* don't stretch to the map's height */
+            flex-shrink: 0;
+        }
+        /* Compact panel: sized to the roster + a little breathing room (§2). */
+        .team-panel .panel { padding-bottom: 10px; }
+
+        /* Display/Draw as a popover off the control bar, not stacked under
+           Team 2's roster - decoupled from the team-panel column entirely,
+           so neither the roster nor these options ever has to compete with
+           the other for the map's --fit-h height budget (the thing that
+           used to force an internal scroll to reach whichever one lost). */
+        .dd-toggle-wrap { position: relative; }
+        .dd-popover {
+            position: absolute; bottom: calc(100% + 8px); left: 0;
+            width: 300px; max-width: calc(100vw - 32px);
+            max-height: min(70vh, 480px); overflow-y: auto;
+            display: flex; flex-direction: column; gap: 8px;
+            background: var(--panel); border: 1px solid var(--border-soft);
+            border-radius: var(--radius-md); padding: 10px;
+            box-shadow: 0 8px 24px rgba(0,0,0,.45);
+            z-index: 40;
+        }
+        .dd-popover .ctl-box { width: 100%; flex-wrap: wrap; box-sizing: border-box; }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border-soft);
+            border-radius: var(--radius-lg);
+            padding: 14px 16px;
+            /* Team panels size to their five rows so none get clipped;
+               the kill feed (last panel) absorbs the leftover height. */
+            flex: 0 0 auto;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .panel:last-child { flex: 1 1 auto; min-height: 70px; }
+        
+        .panel-title {
+            font-size: 12px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: var(--text-dim);
+            margin-bottom: 10px;
+        }
+
+        /* Player rows - three stacked rows: (1) name, (2) K/D/A + health bar +
+           money, (3) full-width loadout. */
+        .player-row {
+            display: flex;
+            flex-direction: column;
+            padding: 10px 2px;
+            border-bottom: 1px solid var(--border);
+            font-size: 15px;
+            font-weight: 500;
+            gap: 6px;
+        }
+        .player-row:last-child { border-bottom: none; }
+        .player-line1 {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+        }
+        /* Row 2: stats + health + money. */
+        .player-line2 {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .player-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+        .player-name {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            line-height: 1.2;
+            font-weight: 700;
+            font-size: 16px;
+        }
+        .player-kda {
+            font-family: var(--font-mono);
+            font-size: 13px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .kda-k  { color: #7ab8ff; }
+        .kda-d  { color: #ff7070; }
+        .kda-a  { color: #88bb88; }
+        .kda-sep { color: #334; margin: 0 1px; }
+        .player-equip { justify-content: flex-start; padding-left: 13px; }
+        .equip-tags {
+            display: flex;
+            flex-wrap: nowrap;
+            gap: 3px;
+            align-items: center;
+        }
+        /* Dead players' loadout is noise; their money still matters next round */
+        .equip-tags.dead { opacity: 0.35; }
+        /* Right-aligned in a fixed column. The width is reserved rather than
+           fitted to the digits: money is the only variable-width thing on
+           row 2, so letting it size itself made every neighbour move as the
+           number changed - see .hp-bar-wrap below. */
+        .player-money {
+            margin-left: auto;
+            padding-left: 6px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            min-width: 52px;
+            text-align: right;
+        }
+        .player-money.money-full  { color: #66cc77; }
+        .player-money.money-force { color: #ddbb44; }
+        .player-money.money-eco   { color: #ff7070; }
+        .team-money {
+            float: right;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: 0.5px;
+            text-transform: none;
+            color: #66cc77;
+        }
+        .player-hp { font-family: var(--font-mono); font-size: 13px; color: var(--text-dim); width: 30px; text-align: right; flex-shrink: 0; }
+        .player-hp.dead { color: #ff4455; text-decoration: line-through; }
+        /* FIXED width, not `flex: 1 1 auto`. The bar used to absorb whatever
+           row 2 had left over, and the only variable-width thing on that row is
+           the money - so a player going from $16,350 to $0 silently made their
+           health bar wider, and 100 HP was a different length on every row and
+           every round. A health bar whose length encodes two things encodes
+           neither. It is a share of the panel now (a percentage resolves
+           against the row, which does not move), so 100 HP is one length for
+           everyone and the money column right-aligns beside it. */
+        .hp-bar-wrap { flex: 0 0 auto; width: 42%; min-width: 40px; max-width: 240px; height: 7px; background: var(--border); border-radius: var(--radius-pill); overflow: hidden; position: relative; }
+        .hp-bar { height: 100%; border-radius: var(--radius-pill); position: relative; z-index: 1; }
+        /* Damage flash (static/viewer.js updateSidebar). The ghost is planted at
+           the health the player HAD and shrinks down onto the health they now
+           have; the mark is a hairline at the landing point. Both fade out, so
+           a hit is visible for a moment mid-playback instead of the bar simply
+           being shorter than it was the last time you happened to look. */
+        .hp-bar-ghost { position: absolute; inset: 0 auto 0 0; height: 100%; width: 0;
+                        background: #ff4455; opacity: 0; border-radius: var(--radius-pill); z-index: 0; }
+        .hp-mark { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px;
+                   background: #fff; opacity: 0; z-index: 2; pointer-events: none; }
+
+        /* Equipment icons */
+        .player-equip {
+            display: flex;
+            flex-wrap: nowrap;
+            gap: 3px;
+            align-items: center;
+        }
+        .equip-tag {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;            /* fixed-size slots - never grow/shrink */
+            box-sizing: border-box;
+            overflow: hidden;          /* clip rather than widen the slot */
+            font-family: var(--font-ui);
+            font-size: 11px;
+            padding: 3px 4px;
+            border-radius: var(--radius-sm);
+            background: rgba(255,255,255,0.07);
+            color: var(--text-dim);
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+            text-align: center;
+        }
+        .equip-tag.rifle  { background: rgba(74,158,255,0.18); color: #7ab8ff; }
+        .equip-tag.sniper { background: rgba(180,100,255,0.18); color: #cc88ff; }
+        .equip-tag.pistol { background: rgba(255,255,255,0.1);  color: #aaa; }
+        .equip-tag.smg    { background: rgba(100,200,100,0.15); color: #88cc88; }
+        .equip-tag.heavy  { background: rgba(255,140,0,0.18);   color: #ffaa44; }
+        .equip-tag.util   { background: rgba(255,220,50,0.15);  color: #ddbb44; }
+        .equip-tag.bomb   { background: rgba(255,60,60,0.2);    color: #ff6666; }
+        .equip-tag.kit    { background: rgba(80,200,255,0.18);  color: #66ccee; }
+        .equip-tag.armor  { background: rgba(150,170,200,0.18); color: #aabbdd; }
+        .equip-tag.knife  { color: #666; }
+        /* Fixed slot widths so every row is identical - the box never resizes as
+           loadouts change. Wide gun icons scale down to fit (max-width:100% +
+           object-fit:contain below). */
+        .equip-tag.slot-primary { width: 46px; }
+        .equip-tag.slot-pistol  { width: 36px; }
+        .equip-tag.slot-armor   { width: 34px; }
+        .equip-tag.slot-nade    { width: 24px; }
+        .equip-tag.slot-carry   { width: 30px; }
+        /* Gap between the gun/armor group and the utility group */
+        .equip-tag.nade-first   { margin-left: 8px; }
+        .equip-tag.slot-empty   { background: transparent; box-shadow: none; color: rgba(255,255,255,0.12); }
+        /* The weapon held at the current tick: a bright white outline around the
+           box so it's obvious what the player is currently holding. */
+        .equip-tag.active {
+            outline: 2px solid rgba(255,255,255,0.95);
+            outline-offset: 1px;
+            box-shadow: 0 0 4px rgba(255,255,255,0.35);
+            filter: brightness(1.12);
+        }
+
+        /* Kill feed is now rendered on-canvas (top-right) by static/killfeed.js. */
+
+        /* Equipment icons in the loadout slots (§1 assets); text tag is fallback.
+           max-width:100% + object-fit:contain so wide gun silhouettes scale down
+           to their fixed slot without changing the slot's (and the box's) width. */
+        .equip-tag .equip-ico { height: 22px; width: auto; max-width: 100%; object-fit: contain; display: block; }
+
+        /* Controls */
+        #controls-wrap {
+            width: 100%;
+            max-width: 1500px;
+            margin-top: 12px;
+            /* Counted by fitview.js - every px here is a px of map. */
+            margin-bottom: 12px;
+            padding: 0 16px;
+        }
+
+        /* Round Navigator */
+        #round-nav {
+            width: 100%;
+            max-width: 1500px;
+            margin-bottom: 10px;
+            /* The row above is centred and leaves margins; these two full-width
+               strips ran into the window edge below 1500px, clipping the frame
+               counter at the right. */
+            padding: 0 16px;
+        }
+        #round-nav-title {
+            font-size: 10px;
+            letter-spacing: 3px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+        #round-btn-scroll {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+        }
+        /* Icon-forward round buttons: the win-condition icon is the dominant
+           element (it's the most informative part), round number is a small
+           corner badge, winner side is a colored top bar (+ a small corner
+           letter as a redundant, colorblind-safe cue) rather than CT/T text. */
+        .round-btn {
+            --wc: transparent;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: 44px;
+            height: 44px;
+            padding: 0;
+            overflow: hidden;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: background 0.12s, border-color 0.12s;
+            font-family: var(--font-ui);
+            line-height: 1;
+        }
+        .round-btn::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 3px;
+            background: var(--wc);
+            opacity: .9;
+        }
+        .round-btn:hover { background: var(--border); border-color: var(--accent); }
+        .round-btn.active-round { border-color: var(--accent); background: rgba(74,158,255,0.12); }
+        .round-btn .rnum { position: absolute; top: 5px; left: 6px; font-size: 9px; color: var(--text-dim); font-weight: 700; }
+        .round-btn .rside { position: absolute; top: 5px; right: 6px; font-size: 8px; font-weight: 700; letter-spacing: .5px; }
+        .round-btn .rside.ct { color: var(--ct); }
+        .round-btn .rside.t  { color: var(--t); }
+        .round-btn .rreason { font-size: 20px; margin-top: 3px; line-height: 1; }
+        .round-btn .rreason-ico { width: 20px; height: 20px; object-fit: contain; opacity: .95; }
+        /* halftime divider */
+        .round-divider {
+            width: 2px;
+            min-width: 2px;
+            background: var(--border);
+            border-radius: var(--radius-pill);
+            align-self: stretch;
+            margin: 0 2px;
+        }
+
+        /* Timeline */
+        #timeline-wrap { position: relative; margin-bottom: 14px; height: 34px; }
+        /* Segment ticks sit behind everything */
+        #timeline-segments {
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 34px;
+            pointer-events: none;
+            z-index: 1;
+            /* Markers are positioned by percentage and are 1px wide with a
+               -50% transform, so the one for a kill at the very end of the
+               match lands half a pixel past the right edge. That was enough to
+               make the whole DOCUMENT one pixel wider than the viewport and
+               put a horizontal scrollbar under every page of the replayer at
+               any width below ~1500px. They are decoration on a fixed-width
+               strip; clipping them is the correct behaviour, not a workaround. */
+            overflow: hidden;
+        }
+        .seg-tick {
+            position: absolute;
+            top: 0;
+            width: 1px;
+            height: 18px;
+            background: rgba(74,158,255,0.35);
+            transform: translateX(-50%);
+        }
+        .seg-label {
+            position: absolute;
+            top: 20px;
+            font-family: var(--font-ui);
+            font-size: 11px;
+            color: var(--text-dim);
+            transform: translateX(-50%);
+            white-space: nowrap;
+            letter-spacing: 0.5px;
+        }
+        #timeline {
+            position: absolute;
+            top: 4px; left: 0; width: 100%; height: 7px;
+            -webkit-appearance: none; background: transparent; outline: none; cursor: pointer; z-index: 3;
+        }
+        #timeline::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 18px; height: 18px;
+            background: var(--accent); border-radius: 50%; cursor: pointer; border: 2px solid var(--bg);
+        }
+        #timeline-track { position: absolute; top: 4px; left: 0; right: 0; height: 7px; background: var(--border); border-radius: var(--radius-pill); z-index: 0; }
+        #timeline-progress { position: absolute; top:4px; left:0; height:7px; background: var(--accent); pointer-events:none; border-radius:var(--radius-pill); z-index: 1; }
+
+        /* Timeline markers - kill/death ticks drawn on the scrub bar. */
+        .seg-kill { position: absolute; top: 2px; width: 1px; height: 10px; background: rgba(200,210,220,0.30); transform: translateX(-50%); pointer-events: none; }
+        .seg-hl   { position: absolute; top: 0; width: 2px; height: 18px; transform: translateX(-50%); pointer-events: auto; }
+        .seg-hl-kill  { background: #46d17a; box-shadow: 0 0 3px #46d17a; }
+        .seg-hl-death { background: #ff5566; box-shadow: 0 0 3px #ff5566; }
+
+        /* Telestration overlay - sits exactly over the map canvas. */
+        #drawCanvas { position: absolute; inset: 0; width: 100%; height: 100%; border: none; background: transparent; z-index: 2; pointer-events: none; touch-action: none; }
+        #loading { z-index: 5; }
+
+        /* Sidebar row affordances: follow-lock, and the per-player hide toggle. */
+        .player-row.locked { outline: 1px solid rgba(255,211,92,0.7); outline-offset: -1px; }
+        .player-row.hidden-player { opacity: 0.4; }
+        .player-row { cursor: pointer; }
+        .player-vis { margin-left: 6px; font-size: 11px; cursor: pointer; opacity: 0.7; user-select: none; }
+        .player-vis:hover { opacity: 1; }
+
+        /* Display + Draw control boxes, stacked under the Team 2 panel. */
+        .ctl-box { display: flex; align-items: center; gap: 7px 8px; padding: 8px 11px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: var(--panel); font-family: var(--font-ui); font-size: 12px; color: var(--text-dim); }
+        .ctl-box-label { width: 100%; font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); opacity: 0.75; }
+        .disp-opt { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+        .util-time-ctl input[type=range] { width: 74px; }
+        .tele-tool { padding: 3px 8px; }
+        .tele-tool.active { border-color: var(--accent); color: var(--accent); }
+        #tele-color { width: 26px; height: 24px; padding: 0; border: 1px solid var(--border); background: none; cursor: pointer; }
+        .disp-hint { font-size: 10px; color: var(--text-dim); opacity: 0.7; line-height: 1.4; }
+        /* Layer picker for multi-level maps. Segmented, because the three
+           options are one choice, not three independent toggles. */
+        .layer-box { display: inline-flex; align-items: center; gap: 4px; }
+        .layer-label { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); }
+        .layer-btn {
+            font-family: var(--font-ui); font-size: 10px;
+            padding: 2px 7px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+            background: transparent; color: var(--text-dim); cursor: pointer; white-space: nowrap;
+        }
+        .layer-btn:hover { border-color: var(--accent); color: var(--text); }
+        .layer-btn.active { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+
+        .controls-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+        button {
+            background: var(--panel); border: 1px solid var(--border); color: var(--text);
+            font-family: var(--font-ui); font-size: 13px; font-weight: 700;
+            letter-spacing: 2px; text-transform: uppercase; padding: 7px 16px;
+            cursor: pointer; transition: background 0.15s, border-color 0.15s;
+        }
+        button:hover { background: var(--border); border-color: var(--accent); color: white; }
+        button.active { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+        .speed-btn { padding: 7px 11px; font-size: 12px; }
+
+        #tick-info {
+            margin-left: auto; font-family: var(--font-mono);
+            font-size: 12px; color: var(--text-dim); display: flex; gap: 18px;
+        }
+        #tick-info span { color: var(--text); }
+
+        .legend {
+            display: flex; gap: 14px; font-size: 11px; color: var(--text-dim);
+            align-items: center; margin-top: 8px; flex-wrap: wrap;
+        }
+        .legend-item { display: flex; align-items: center; gap: 5px; }
+        .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+
+        /* ── Responsive tiers: keep the canvas the hero ──────────────────────
+           The team panels are big on a full-screen window but must step down -
+           width AND their internals together - as the window narrows, so the
+           map keeps the majority of the width instead of the panels dwarfing
+           it (e.g. a half-screen 16:9 window ≈ 960px). Each tier scales panel
+           width, roster fonts, and the loadout icons/slots in lockstep so the
+           equipment row still fits without wrapping. */
+
+        /* Mid tier (e.g. a ~1100–1400px window). */
+        @media (max-width: 1400px) {
+            .team-panel { width: 280px; min-width: 280px; max-width: 280px; }
+            .panel { padding: 12px 13px; }
+            .player-row { font-size: 14px; padding: 8px 2px; gap: 5px; }
+            .player-name { font-size: 15px; }
+            .player-line2 { gap: 7px; }
+            .player-kda { font-size: 12px; }
+            .player-hp  { font-size: 12px; width: 28px; }
+            .hp-bar-wrap { height: 6px; }
+            .equip-tag { font-size: 10px; padding: 2px 3px; }
+            .equip-tag .equip-ico { height: 19px; }
+            .equip-tag.slot-primary { width: 40px; }
+            .equip-tag.slot-pistol  { width: 32px; }
+            .equip-tag.slot-armor   { width: 26px; }
+            .equip-tag.slot-nade    { width: 19px; }
+            .equip-tag.slot-carry   { width: 24px; }
+        }
+
+        /* Narrow tier - the half-screen 16:9 case the map must dominate. */
+        @media (max-width: 1100px) {
+            .team-panel { width: 215px; min-width: 215px; max-width: 215px; }
+            .panel { padding: 11px 12px; }
+            .player-row { font-size: 13px; padding: 7px 1px; gap: 4px; }
+            .player-name { font-size: 14px; }
+            .player-line1 { gap: 5px; }
+            .player-line2 { gap: 6px; }
+            .player-dot { width: 8px; height: 8px; }
+            .player-kda { font-size: 11px; }
+            .player-hp  { font-size: 11px; width: 24px; }
+            /* The base 42% health-bar share was sized for the wider tiers
+               (320-280px panels) and was never re-checked against this
+               215px one: dot + hp + bar + money + 3 gaps added up to more
+               than the row had, and since none of them may shrink
+               (flex-shrink:0, by design - see .hp-bar-wrap/.player-money's
+               own comments above), the overflow doesn't reflow, it just
+               pushes $money's fixed-width column out past the panel's own
+               right edge and get clipped by its overflow:hidden - visible
+               as a player's money silently cut off mid-figure. */
+            .hp-bar-wrap { width: 30%; min-width: 30px; height: 5px; }
+            .player-money { font-size: 10px; min-width: 44px; }
+            .equip-tags { gap: 2px; }
+            .equip-tag { font-size: 9px; padding: 2px 2px; }
+            .equip-tag .equip-ico { height: 16px; }
+            .equip-tag.slot-primary { width: 30px; }
+            .equip-tag.slot-pistol  { width: 26px; }
+            .equip-tag.slot-armor   { width: 18px; }
+            .equip-tag.slot-nade    { width: 15px; }
+            .equip-tag.slot-carry   { width: 20px; }
+            .equip-tag.nade-first   { margin-left: 6px; }
+        }
+
+        /* Below the shell's 950px breakpoint the layout has to stop being three
+           columns: two 215px panels plus a map that still wants 380px do not
+           fit, and the overflow went to the right-hand panel (clipped off the
+           page, with a horizontal scrollbar under everything). The panels wrap
+           under the map instead and share the width. Written AFTER the 1100px
+           tier above on purpose - same selector, same specificity, so source
+           order decides, and the narrower tier must come last or its fluid
+           width loses to the 1100px tier's fixed 215px for any window in
+           (700,900] (the exact bug the 700px tier below already had to work
+           around with its own restatement). */
+        @media (max-width: 900px) {
+            .main-layout { flex-wrap: wrap; }
+            /* DOM order is team1, map, team2 - so the map needs an explicit
+               order to lead once the row wraps, otherwise the first panel
+               takes the top of the page and the map is pushed below it. */
+            .map-col { flex: 1 0 100%; max-width: 100%; min-width: 0; order: -1; }
+            .team-panel { flex: 1 1 0; width: auto; min-width: 0; max-width: none; order: 1; }
+        }
+
+        /* Short-window hero (a Surface Pro at 200% is 1368x912 CSS px, a 1080p
+           screen ~1000px after the window chrome). The band stacked its map box
+           and its stat pills vertically - 159px of a page that has to fit a
+           square map AND the playback controls under it. Same pieces laid out
+           sideways: icon beside the name, pills in two rows. ~80px. */
+        @media (min-width: 701px) and (max-height: 1100px) {
+            header.hero { padding: 12px 20px; gap: 14px; margin-bottom: 12px; }
+            .hero-map { display: grid; grid-template-columns: auto auto; column-gap: 12px; align-items: center; padding: 8px 14px; }
+            .hero-map-ico { grid-row: 1 / span 2; height: 36px; margin-bottom: 0; }
+            .hero-map-name, .hero-map-sub { grid-column: 2; }
+            .hero-map-name { font-size: 24px; }
+            .hero-pills { display: grid; grid-auto-flow: column; grid-template-rows: auto auto; gap: 5px 6px; }
+            .meta-pill { padding: 3px 7px; }
+            /* At this tier, hero-map + #meta + hero-pills can add up to more
+               than header.hero has room for (measured: 190 + 377 + 299 + two
+               24px gaps = 914px of content against ~873px available at a
+               929px-wide window) - header.hero's flex-wrap then does exactly
+               what it's told and wraps hero-pills onto its own line, which
+               (still carrying margin-left:auto) lands it alone, right-aligned,
+               well below and to the right of the title - reading as the hero
+               band being broken rather than merely two lines. "2D Replay
+               Viewer" is the one static, non-essential label in that first
+               line - dropping it recovers ~190px, comfortably enough to keep
+               everything on one line instead of papering over the wrap. */
+            .hero-page { display: none; }
+        }
+
+        /* The map row is as tall as the window allows (static/fitview.js sets
+           --fit-h and --fit-col on .main-layout). The team columns are capped
+           to that height and scroll on their own, so the Display/Draw boxes
+           under Team 2 - taller than the map on a short window - no longer push
+           the round nav and the playback controls off the page. Wide tiers
+           only: stacked, the page is the scroller again. flex-shrink: 0 because
+           the column is a flex box, and capping it would otherwise squash the
+           roster panel (overflow: hidden) instead of scrolling it. */
+        @media (min-width: 901px) {
+            .team-panel {
+                max-height: var(--fit-h, none); overflow-y: auto;
+                scrollbar-width: thin; scrollbar-color: var(--border-hi) transparent;
+            }
+            .team-panel > * { flex-shrink: 0; }
+        }
+
+        /* Quarter-window tier (a 1080p screen quartered is ~640x520). Two
+           things break here that the 900px tier does not cover: the full-bleed
+           bands run flush into the window edge because nothing on this page
+           carries horizontal padding, and the two team panels sharing one row
+           are ~300px each - narrower than one loadout, which `flex-wrap:
+           nowrap` on .equip-tags then pushed sideways off the page. */
+        @media (max-width: 700px) {
+            header.hero { gap: 14px; padding: 14px 14px; margin-bottom: 12px; }
+            .hero-map { padding: 7px 12px; }
+            .hero-map-ico { height: 32px; }
+            .hero-map-name { font-size: 20px; letter-spacing: 1px; }
+            .hero-pills { margin-left: 0; }
+            .main-layout, #controls-wrap, #round-nav { padding: 0 10px; }
+            /* One panel per line: at this width a shared row cannot hold a
+               roster row's name, K/D/A, bar and money without ellipsing all
+               four at once - the money column was being clipped mid-figure.
+               The three width declarations are load-bearing: the 1100px tier
+               above sets a FIXED 215px, and this ≤700px tier must be the
+               LAST one restating width/min-width/max-width on .team-panel
+               (same rule the 900px tier above it now follows too, moved
+               after the 1100px tier for the same reason) - same selector,
+               same specificity, so whichever tier is written last in the
+               cascade wins for any width the tiers overlap on. */
+            .team-panel { flex: 1 1 100%; width: auto; min-width: 100%; max-width: none; }
+            .equip-tags { flex-wrap: wrap; }
+            /* NO height guard down here. `calc(100vh - …)` on .map-col above
+               keeps the controls near the map on a wide window; at this width
+               the map already has the full column and the guard was the only
+               thing shrinking it to a third of it (290px on a 640x520 window
+               against a 620px column). The reason a tall canvas was a problem
+               - the wheel and the per-frame scrollIntoView both trapping the
+               page - is fixed at the source. */
+            .map-col { max-width: 100%; }
+        }
+    </style>
+{% endblock %}
+{% block content %}
+
+<header id="match-hero" class="hero" style="display:none">
+    <div class="hero-map">
+        <img class="hero-map-ico" id="hero-map-ico" alt="" style="display:none">
+        <div class="hero-map-name" id="hero-map">-</div>
+        <div class="hero-map-sub"  id="hero-mode">-</div>
+    </div>
+    <div id="meta">
+        <div class="hero-page">2D Replay Viewer</div>
+        <div class="meta-pill">ROUND <span id="roundLabel">-</span></div>
+        <div class="meta-pill">TIME <span id="timeLabel">0:00</span></div>
+    </div>
+    <div class="hero-pills">
+        <div class="meta-pill" id="hero-rank" style="display:none"></div>
+        <div class="meta-pill" id="hero-rounds">-</div>
+        <div class="meta-pill" id="hero-kills">-</div>
+        <div class="meta-pill" id="hero-dmg">-</div>
+    </div>
+</header>
+
+<div class="main-layout">
+    <!-- Team 1 (first-half CT) - fixed on the left across the halftime swap. -->
+    <div class="team-panel">
+        <div class="panel">
+            <div class="panel-title"><span id="team1-name">Team 1</span><span id="team1-money" class="team-money"></span></div>
+            <div id="team1-list"></div>
+        </div>
+    </div>
+
+    <div class="map-col">
+        <div id="map-wrap">
+            <canvas id="mapCanvas" width="1024" height="1024"></canvas>
+            <canvas id="drawCanvas" width="1024" height="1024"></canvas>
+            <div id="loading">Loading match data…</div>
+        </div>
+    </div>
+
+    <!-- Team 2 (first-half T) - fixed on the right. Display/Draw used to be
+         stacked underneath this panel; they're a popover off the control bar
+         now (see #dd-popover below) so they never compete with the roster
+         for the map's height budget. -->
+    <div class="team-panel">
+        <div class="panel">
+            <div class="panel-title"><span id="team2-name">Team 2</span><span id="team2-money" class="team-money"></span></div>
+            <div id="team2-list"></div>
+        </div>
+    </div>
+</div>
+
+<div id="round-nav">
+    <div id="round-nav-title">Rounds</div>
+    <div id="round-btn-scroll">
+        <!-- populated by JS after data loads -->
+    </div>
+</div>
+
+<div id="controls-wrap">
+    <div id="timeline-wrap">
+        <div id="timeline-track"></div>
+        <div id="timeline-progress"></div>
+        <div id="timeline-segments"></div>
+        <input type="range" id="timeline" min="0" value="0" step="1">
+    </div>
+    <div class="controls-row">
+        <button id="btnPlay">▶ Play</button>
+        <button id="btnPause">⏸ Pause</button>
+        <button id="btnStop">■ Stop</button>
+        <button id="btnSkipBack" title="Back 15s">« 15s</button>
+        <button id="btnSkipFwd" title="Forward 15s">15s »</button>
+        <button id="btnOpenCS2" title="Open the demo in CS2 (no HLAE) - it jumps to this tick by itself, from the followed player's point of view (click a player to follow one first); F8 in game jumps manually">🎮 In CS2</button>
+        <button class="speed-btn" data-speed="0.5">0.5×</button>
+        <button class="speed-btn active" data-speed="1">1×</button>
+        <button class="speed-btn" data-speed="2">2×</button>
+        <button class="speed-btn" data-speed="4">4×</button>
+        <span class="dd-toggle-wrap">
+            <button id="btnDisplayDraw" title="Display &amp; draw options">⚙ Display</button>
+            <div id="dd-popover" class="dd-popover" style="display:none">
+                <div class="ctl-box">
+                    <span class="ctl-box-label">Display</span>
+                    <label class="disp-opt"><input type="checkbox" id="opt-util" checked> Utility</label>
+                    <label class="disp-opt"><input type="checkbox" id="opt-trails"> Trails</label>
+                    <label class="disp-opt" title="Circles at the real CS2 hearing range: running ~1100u, unsuppressed gunfire ~4000u, suppressed ~900u, grenade detonations ~3500u, plant/defuse ~1100u"><input type="checkbox" id="opt-sound"> Audibility</label>
+                    <label class="disp-opt" title="Weapons and utility lying on the ground (needs a re-parsed demo - older matches have no drop data)"><input type="checkbox" id="opt-drops" checked> Dropped items</label>
+                    <label class="disp-opt" title="Progress ring on whoever is planting or defusing, plus the strip under the clock showing whether a defuse beats the fuse (needs a re-parsed demo)"><input type="checkbox" id="opt-bomb" checked> Plant / defuse</label>
+                    <label class="disp-opt" title="Start a round at the buy rather than at the moment it goes live - the freeze is 21s on a pistol round and is where it gets decided"><input type="checkbox" id="opt-freeze"> Freeze time</label>
+                    <!-- Multi-level maps only (Nuke, Vertigo). Hidden by
+                         updateLayerButtons() on every other map - see
+                         static/maplayers.logic.js. -->
+                    <span class="layer-box" id="layer-box" style="display:none">
+                        <span class="layer-label" title="Nuke and Vertigo are two maps stacked on top of each other; a flat radar cannot show both">Layer</span>
+                        <button type="button" class="layer-btn active" data-layer="auto" title="Follow whichever floor most of the living players are on">Auto</button>
+                        <button type="button" class="layer-btn" data-layer="upper">Upper</button>
+                        <button type="button" class="layer-btn" data-layer="lower">Lower</button>
+                    </span>
+                    <label class="disp-opt util-time-ctl">Util&nbsp;time
+                        <input type="range" id="util-time" min="10" max="160" step="2" value="20">
+                        <span id="util-time-val">0.3s</span>
+                    </label>
+                    <label class="disp-opt util-time-ctl" title="Size of the in-canvas scoreboard and kill feed. They are drawn on the canvas at a fixed pixel size, so they shrink relative to the map on a large display - this scales them back up. Remembered between sessions.">HUD&nbsp;size
+                        <input type="range" id="hud-scale" min="60" max="200" step="5" value="100">
+                        <span id="hud-scale-val">100%</span>
+                    </label>
+                </div>
+                <div class="ctl-box">
+                    <span class="ctl-box-label">Draw</span>
+                    <button class="tele-tool" data-tool="pen"   title="Freehand">✎</button>
+                    <button class="tele-tool" data-tool="line"  title="Line">╱</button>
+                    <button class="tele-tool" data-tool="arrow" title="Arrow">➤</button>
+                    <button class="tele-tool" data-tool="rect"  title="Rectangle">▭</button>
+                    <input type="color" id="tele-color" value="#ff3b3b" title="Draw colour">
+                    <button id="btn-tele-clear" title="Clear drawings">Clear</button>
+                </div>
+                <span class="disp-hint">click a player to lock/follow · ctrl+scroll to zoom · drag to pan · dbl-click to reset</span>
+            </div>
+        </span>
+        <div id="tick-info">
+            TICK <span id="tickDisplay">-</span>
+            &nbsp;
+            FRAME <span id="frameDisplay">0 / 0</span>
+        </div>
+    </div>
+    <div class="legend">
+        <div class="legend-item"><span class="legend-dot" style="background:#4a9eff"></span> CT</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#ffaa22"></span> T</div>
+        <div class="legend-item"><span class="legend-dot" style="background:rgba(160,210,160,0.9)"></span> Smoke</div>
+        <div class="legend-item"><span class="legend-dot" style="background:rgba(255,120,30,0.9)"></span> Molotov</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#ffee66"></span> Flash</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#ff6633"></span> HE</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#ff4444"></span> Bomb</div>
+        <div class="legend-item" style="font-family:monospace;font-size:10px;color:#556070">- - - Firing</div>
+    </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='chunks.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='chunks.js') }}"></script>
+<script src="{{ url_for('static', filename='fmt.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='maps.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='assets.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='assets.js') }}"></script>
+<script src="{{ url_for('static', filename='matchhero.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='matchhero.js') }}"></script>
+<script src="{{ url_for('static', filename='match2d.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='match2d.js') }}"></script>
+<script src="{{ url_for('static', filename='viewport.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='viewport.js') }}"></script>
+<script src="{{ url_for('static', filename='killfeed.js') }}"></script>
+<script src="{{ url_for('static', filename='utilfx.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='utilfx.js') }}"></script>
+<script src="{{ url_for('static', filename='maplayers.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='sound.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='grounditems.logic.js') }}"></script>
+<!-- Plant/defuse progress + "does the defuse beat the fuse?" - pure logic,
+     read by viewer.js's player ring and its HUD strip. -->
+<script src="{{ url_for('static', filename='bombaction.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='bombaction.js') }}"></script>
+<script src="{{ url_for('static', filename='grounditems.js') }}"></script>
+<script src="{{ url_for('static', filename='telestration.js') }}"></script>
+<script src="{{ url_for('static', filename='demojump.js') }}"></script>
+<script src="{{ url_for('static', filename='fitview.logic.js') }}"></script>
+<script src="{{ url_for('static', filename='fitview.js') }}"></script>
+<script>
+    // Size the map so hero + map + round nav + controls fit the window without
+    // a page scroll. The CSS applies the result on the wide tiers only.
+    // Kept on window.__fitView so viewer.js can force one more measurement
+    // right after match data loads (see its /data/ fetch) - the ResizeObserver
+    // above should already catch the hero/round-nav size change on its own,
+    // this is only a fallback for an environment where that notification
+    // doesn't fire.
+    window.__fitView = FitView.bind({
+        row:    document.querySelector('.main-layout'),
+        col:    document.querySelector('.map-col'),
+        canvas: document.getElementById('mapCanvas'),
+        last:   document.getElementById('controls-wrap'),
+        watch:  [document.getElementById('match-hero'),
+                 document.getElementById('round-nav'),
+                 document.getElementById('controls-wrap')],
+        // 430 = .map-col's min-width (it would win over a smaller max-width
+        // anyway); 756 = the canvas ceiling.
+        limits: { minSide: 430, maxSide: 756 },
+    });
+</script>
+<script src="{{ url_for('static', filename='viewer.js') }}"></script>
+{% endblock %}
