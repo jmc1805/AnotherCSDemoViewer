@@ -59,12 +59,20 @@ TICKRATE = 64
 # keep coming up with zero captured frames.
 GAME_STARTUP_SECONDS = 15
 
-# Where cs2.exe lives under a CS2 install directory - the standard Steam
-# layout. Used both to sanity-check that the configured game directory
-# really is a CS2 install, and as -programPath for HLAE's custom loader
-# (see hlae_launch_args()) - record_clip() launches CS2 through HLAE, never
-# this path directly.
-_CS2_EXE_SUFFIX = os.path.join('game', 'bin', 'win64', 'cs2.exe')
+# Where the CS2 executable lives under a CS2 install directory - the standard
+# Steam layout. Used both to sanity-check that the configured game directory
+# really is a CS2 install, and (on Windows) as -programPath for HLAE's custom
+# loader (see hlae_launch_args()) - record_clip() launches CS2 through HLAE,
+# never this path directly.
+#
+# The Linux depot ships an EMPTY bin/win64 beside bin/linuxsteamrt64, so the
+# Windows path must not be the one probed there: watch_ready() would say "no
+# CS2" on a perfectly good install. _CS2_EXE_SUFFIX_WIN stays as its own name
+# because load_settings() migrates an old *Windows* cs2_path with it.
+IS_LINUX = sys.platform.startswith('linux')
+_CS2_EXE_SUFFIX_WIN = os.path.join('game', 'bin', 'win64', 'cs2.exe')
+_CS2_EXE_SUFFIX_LINUX = os.path.join('game', 'bin', 'linuxsteamrt64', 'cs2')
+_CS2_EXE_SUFFIX = _CS2_EXE_SUFFIX_LINUX if IS_LINUX else _CS2_EXE_SUFFIX_WIN
 
 
 def cs2_exe_path(game_dir):
@@ -130,11 +138,45 @@ POST_RECORD_CLOSED_CONFIRMATION = (
 # of these - see the VAC-risk note above.
 _FORBIDDEN_TOKENS = ('connect ', 'connect_', 'matchmaking', 'mm_', 'retry')
 
-# Common Windows install locations probed by autodetect_paths(). Always
+# Common install locations probed by autodetect_paths(). Always
 # user-overridable in Settings - these are just a convenience first guess.
 _CS2_CANDIDATES = [
     r"C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive",
 ]
+_CS2_STEAM_DIRNAME = 'Counter-Strike Global Offensive'
+_LINUX_STEAM_ROOTS = (
+    '~/.local/share/Steam',
+    '~/.steam/steam',
+    '~/.var/app/com.valvesoftware.Steam/.local/share/Steam',  # Flatpak
+)
+
+
+def linux_cs2_candidates(home=None):
+    """CS2 install dirs under every Steam library on this Linux user's account:
+    the three usual Steam roots, plus any extra library listed in each root's
+    libraryfolders.vdf (a second drive is where CS2's ~40 GB usually ends up).
+    Order preserved, duplicates dropped."""
+    import re
+    roots = [os.path.expanduser(r) if home is None else os.path.join(home, r[2:])
+             for r in _LINUX_STEAM_ROOTS]
+    libs = list(roots)
+    for root in roots:
+        vdf = os.path.join(root, 'steamapps', 'libraryfolders.vdf')
+        try:
+            with open(vdf, encoding='utf-8', errors='replace') as f:
+                text = f.read()
+        except OSError:
+            continue
+        libs += re.findall(r'"path"\s+"([^"]+)"', text)
+    seen, out = set(), []
+    for lib in libs:
+        cand = os.path.join(lib, 'steamapps', 'common', _CS2_STEAM_DIRNAME)
+        if cand not in seen:
+            seen.add(cand)
+            out.append(cand)
+    return out
+
+
 _HLAE_CANDIDATES = [
     r"C:\Program Files\HLAE\HLAE.exe",
     r"C:\HLAE\HLAE.exe",
@@ -225,12 +267,12 @@ def load_settings():
 
     game_dir = load_cs2_game_dir()
     legacy_cs2_path = data.get('cs2_path')
-    if not game_dir and legacy_cs2_path and legacy_cs2_path.endswith(_CS2_EXE_SUFFIX):
+    if not game_dir and legacy_cs2_path and legacy_cs2_path.endswith(_CS2_EXE_SUFFIX_WIN):
         # One-time migration: this key used to store the full cs2.exe path
         # per-tool. Derive the shared game directory from it so existing
         # configuration isn't silently lost by the switch to a single
         # app-wide cs2_game_dir setting.
-        candidate = legacy_cs2_path[:-len(_CS2_EXE_SUFFIX)].rstrip('\\/')
+        candidate = legacy_cs2_path[:-len(_CS2_EXE_SUFFIX_WIN)].rstrip('\\/')
         if os.path.isfile(cs2_exe_path(candidate)):
             save_cs2_game_dir(candidate)
             game_dir = candidate
@@ -305,8 +347,8 @@ def settings_ready(settings=None):
 
 
 def autodetect_paths(search_roots=None):
-    """Best-guess paths for CS2/HLAE/ffmpeg by probing common Windows
-    install locations (or, for tests, an injected list of candidates). CS2
+    """Best-guess paths for CS2/HLAE/ffmpeg by probing common install
+    locations (or, for tests, an injected list of candidates). CS2
     candidates are game *directories* - a candidate counts as found when
     cs2_exe_path(candidate) exists, matching cs2_game_dir's shape. Never
     overwrites explicit user settings - callers merge this in only for keys
@@ -332,7 +374,8 @@ def autodetect_paths(search_roots=None):
             'ffmpeg_path': first_existing_file(search_roots.get('ffmpeg', [])),
         }
     return {
-        'cs2_game_dir': first_existing_cs2_dir(_CS2_CANDIDATES),
+        'cs2_game_dir': first_existing_cs2_dir(
+            linux_cs2_candidates() if IS_LINUX else _CS2_CANDIDATES),
         'hlae_path': first_existing_file(_HLAE_CANDIDATES),
         'ffmpeg_path': first_existing_file(_FFMPEG_CANDIDATES),
     }
@@ -866,11 +909,19 @@ def watch_ready(settings=None):
 
 
 def cs2_is_running(timeout=10):
-    """True when a cs2.exe is already running. A second CS2 can't start while
-    one is up, so the launch would fail with nothing on screen to explain why
-    - better to say so first. Returns False when tasklist isn't available
-    (e.g. the dev container), so this can only ever add a clearer error, never
-    block a launch that would have worked."""
+    """True when a CS2 process is already running. A second CS2 can't start
+    while one is up, so the launch would fail with nothing on screen to explain
+    why - better to say so first. Returns False when the process lister isn't
+    available (e.g. the dev container), so this can only ever add a clearer
+    error, never block a launch that would have worked."""
+    if IS_LINUX:
+        try:
+            # -x: exact process name, so `cs2viewer`/`cs2.sh` never match.
+            result = subprocess.run(['pgrep', '-x', 'cs2'], capture_output=True,
+                                    text=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
     try:
         result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq cs2.exe'],
                                 capture_output=True, text=True, timeout=timeout,
@@ -1128,6 +1179,20 @@ def netcon_jump(port, tick, focus_player, on_log=None):
         _netcon_close(sock)
 
 
+def _cs2_game_flags(cfg_name, netcon_port, insecure, steam_flag):
+    """The flags CS2 itself receives, shared by both launch routes. -steam is
+    for a binary started directly, so it is left out when Steam does the
+    launching."""
+    flags = ['-console']
+    if steam_flag:
+        flags.insert(0, '-steam')
+    if insecure:
+        flags.append('-insecure')
+    if netcon_port:
+        flags += ['-netconport', str(netcon_port)]
+    return flags + ['+exec', cfg_name]
+
+
 def cs2_watch_launch_args(cs2_exe, cfg_name, netcon_port=None, insecure=True):
     """argv for launching CS2 directly - no HLAE, no hook DLL, no injection.
 
@@ -1143,12 +1208,59 @@ def cs2_watch_launch_args(cs2_exe, cfg_name, netcon_port=None, insecure=True):
     -netconport opens the TCP console netcon_jump() drives to perform the
     jump itself; omit it (netcon_port=None) and the cfg's F8 bind is the only
     way to reach the moment."""
-    args = [cs2_exe, '-steam', '-console']
-    if insecure:
-        args.append('-insecure')
-    if netcon_port:
-        args += ['-netconport', str(netcon_port)]
-    return args + ['+exec', cfg_name]
+    return [cs2_exe] + _cs2_game_flags(cfg_name, netcon_port, insecure, True)
+
+
+CS2_APP_ID = '730'
+
+
+def steam_client_argv(game_dir):
+    """argv prefix that talks to the user's Steam client, or None if there is
+    none to be found. Linux only.
+
+    Linux CS2 cannot be started by running its binary: cs2.sh (and so the
+    game) aborts with "not launched within the Steam for Linux sniper runtime
+    environment" unless Steam started it. So the launch goes through the
+    client, which forwards everything after the app id to the game as launch
+    options - `steam -applaunch 730 -console +exec x` is what a Steam launch
+    option field would do. A Flatpak Steam is recognised by where the game
+    lives, since that install is invisible to a plain `steam` on PATH."""
+    if '.var/app/com.valvesoftware.Steam' in game_dir.replace(os.sep, '/'):
+        flatpak = shutil.which('flatpak')
+        return [flatpak, 'run', 'com.valvesoftware.Steam'] if flatpak else None
+    steam = shutil.which('steam')
+    if steam:
+        return [steam]
+    # No launcher on PATH: the client's own script sits beside steamapps/.
+    root = game_dir.replace(os.sep, '/').split('/steamapps/')[0]
+    script = os.path.join(root, 'steam.sh')
+    return [script] if os.path.isfile(script) else None
+
+
+def cs2_steam_launch_args(game_dir, cfg_name, netcon_port=None, insecure=True):
+    """argv that has Steam start CS2 with the watch cfg. See steam_client_argv()
+    for why. Raises ClipError when there is no Steam client to ask."""
+    client = steam_client_argv(game_dir)
+    if not client:
+        raise ClipError(
+            'Could not find the Steam client to launch CS2 with. Start Steam '
+            'yourself, or make sure `steam` is on your PATH. CS2 on Linux '
+            'cannot be started without it.')
+    return client + ['-applaunch', CS2_APP_ID] + _cs2_game_flags(
+        cfg_name, netcon_port, insecure, False)
+
+
+def _child_env():
+    """The environment for a helper process this app did not build. A frozen
+    PyInstaller app points LD_LIBRARY_PATH at its own bundle and keeps the
+    user's original in LD_LIBRARY_PATH_ORIG; leaving the bundle's on Steam
+    makes it load our libraries instead of its own."""
+    env = dict(os.environ)
+    if 'LD_LIBRARY_PATH_ORIG' in env:
+        env['LD_LIBRARY_PATH'] = env.pop('LD_LIBRARY_PATH_ORIG')
+        if not env['LD_LIBRARY_PATH']:
+            del env['LD_LIBRARY_PATH']
+    return env
 
 
 # ── The live watch session ────────────────────────────────────────────────────
@@ -1165,21 +1277,39 @@ def cs2_watch_launch_args(cs2_exe, cfg_name, netcon_port=None, insecure=True):
 # be both useless and rude. `proc.poll()` is the authoritative "is our game
 # still there" check.
 
-_WATCH_SESSION = {'proc': None, 'port': None, 'dem_path': None}
+# On Linux the handle is Steam's launcher, which exits within a second once it
+# has passed the request on; the game is then a process nobody here owns. The
+# session records that (`via_steam`) and is alive while a `cs2` process exists,
+# with a grace period after the launch because the game takes a while to appear.
+STEAM_STARTUP_GRACE = 120  # seconds
+
+_WATCH_SESSION = {'proc': None, 'port': None, 'dem_path': None,
+                  'via_steam': False, 'launched_at': 0.0}
 _WATCH_LOCK = threading.Lock()
+
+
+def _session_alive():
+    proc = _WATCH_SESSION.get('proc')
+    if proc is None:
+        return False
+    if proc.poll() is None:
+        return True
+    if not _WATCH_SESSION.get('via_steam'):
+        return False
+    if cs2_is_running():
+        return True
+    return time.monotonic() - _WATCH_SESSION.get('launched_at', 0.0) < STEAM_STARTUP_GRACE
 
 
 def watch_session_port():
     """The netcon port of the CS2 this app launched, if it is still running -
     else None (nothing launched yet, or the user closed the game)."""
-    proc = _WATCH_SESSION.get('proc')
-    if proc is None or proc.poll() is not None:
-        return None
-    return _WATCH_SESSION.get('port')
+    return _WATCH_SESSION.get('port') if _session_alive() else None
 
 
 def _reset_watch_session():
-    _WATCH_SESSION.update(proc=None, port=None, dem_path=None)
+    _WATCH_SESSION.update(proc=None, port=None, dem_path=None,
+                          via_steam=False, launched_at=0.0)
 
 
 def netcon_switch_demo(port, dem_path, on_log=None):
@@ -1277,12 +1407,24 @@ def launch_demo_at(dem_path, tick, focus_player):
         # Source's `exec` takes the cfg name without its extension.
         cfg_name = os.path.splitext(os.path.basename(cfg_path))[0]
         port = pick_free_port()
-        launch_args = cs2_watch_launch_args(cs2_exe, cfg_name, netcon_port=port)
+        via_steam = IS_LINUX
         try:
-            proc = subprocess.Popen(launch_args, cwd=os.path.dirname(cs2_exe))
+            if via_steam:
+                launch_args = cs2_steam_launch_args(
+                    settings['cs2_game_dir'], cfg_name, netcon_port=port)
+                # New session + no inherited pipes: the game must outlive this
+                # server, and Steam is chatty on stdout.
+                proc = subprocess.Popen(
+                    launch_args, env=_child_env(), start_new_session=True,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL)
+            else:
+                launch_args = cs2_watch_launch_args(cs2_exe, cfg_name, netcon_port=port)
+                proc = subprocess.Popen(launch_args, cwd=os.path.dirname(cs2_exe))
         except OSError as e:
             raise ClipError(f'Could not launch CS2: {e}')
-        _WATCH_SESSION.update(proc=proc, port=port, dem_path=dem_path)
+        _WATCH_SESSION.update(proc=proc, port=port, dem_path=dem_path,
+                              via_steam=via_steam, launched_at=time.monotonic())
         _start_jump_thread(port, tick, focus_player)
 
     return (f'CS2 is starting with the demo - it will jump to tick {landing}'

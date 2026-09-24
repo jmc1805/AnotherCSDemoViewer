@@ -33,13 +33,13 @@ def eq(a, b, msg):
 
 
 def _make_cs2_install(tmpdir, name="CS2"):
-    """A fake CS2 install: <tmpdir>/<name>/game/bin/win64/cs2.exe, matching
-    the standard Steam layout cs2_exe_path() expects. Returns the game dir
-    (what cs2_game_dir should be set to), not the exe path."""
+    """A fake CS2 install with the executable where cs2_exe_path() expects it
+    on this platform (game/bin/win64/cs2.exe, or game/bin/linuxsteamrt64/cs2).
+    Returns the game dir (what cs2_game_dir should be set to), not the exe."""
     game_dir = os.path.join(tmpdir, name)
-    exe_dir = os.path.join(game_dir, "game", "bin", "win64")
-    os.makedirs(exe_dir, exist_ok=True)
-    open(os.path.join(exe_dir, "cs2.exe"), "w").close()
+    exe = clip_record.cs2_exe_path(game_dir)
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    open(exe, "w").close()
     return game_dir
 
 
@@ -317,7 +317,8 @@ def test_load_settings_migrates_legacy_cs2_path():
         import json as _json
         import paths
         game_dir = _make_cs2_install(tmpdir)
-        legacy_exe = clip_record.cs2_exe_path(game_dir)
+        # What the old per-tool setting held: always a Windows cs2.exe path.
+        legacy_exe = os.path.join(game_dir, clip_record._CS2_EXE_SUFFIX_WIN)
         with open(clip_record.SETTINGS_PATH, "w", encoding="utf-8") as f:
             _json.dump({'cs2_path': legacy_exe, 'hlae_path': None,
                         'ffmpeg_path': None, 'vac_risk_ack': True}, f)
@@ -1222,6 +1223,91 @@ def test_launch_demo_at_refuses_a_cs2_it_did_not_start():
         undo_ready()
         clip_record.cs2_is_running = real_running
         _with_session(None, None, None)
+
+
+def test_linux_depot_with_empty_win64_is_still_a_cs2_install():
+    # The Linux depot ships bin/win64 empty beside bin/linuxsteamrt64; only the
+    # native binary may count as "CS2 is here" on Linux.
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, 'game', 'bin', 'win64'))
+        ok(not clip_record.watch_ready({'cs2_game_dir': d}),
+           'an empty win64 dir is not an install')
+        game_dir = _make_cs2_install(d, 'real')
+        ok(clip_record.watch_ready({'cs2_game_dir': game_dir}), 'the native exe is')
+        if clip_record.IS_LINUX:
+            ok(clip_record.cs2_exe_path(game_dir).endswith(
+                os.path.join('linuxsteamrt64', 'cs2')), 'Linux probes linuxsteamrt64/cs2')
+
+
+def test_steam_launch_args_forward_game_flags_without_steam_flag():
+    real_which = clip_record.shutil.which
+    clip_record.shutil.which = lambda n: '/usr/bin/' + n
+    try:
+        lib = '/games/steamapps/common/Counter-Strike Global Offensive'
+        args = clip_record.cs2_steam_launch_args(lib, 'cs2viewer_watch', netcon_port=5150)
+        eq(args[:3], ['/usr/bin/steam', '-applaunch', '730'], 'asks Steam to start app 730')
+        ok('-steam' not in args, '-steam is for a directly-run binary, not Steam launches')
+        eq(args[args.index('-netconport') + 1], '5150', 'netcon port is forwarded')
+        eq(args[-2:], ['+exec', 'cs2viewer_watch'], 'the watch cfg is exec-ed')
+        flat = clip_record.cs2_steam_launch_args(
+            '/home/u/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/x',
+            'c')
+        eq(flat[:4], ['/usr/bin/flatpak', 'run', 'com.valvesoftware.Steam', '-applaunch'],
+           'a Flatpak Steam is driven through flatpak')
+    finally:
+        clip_record.shutil.which = real_which
+
+
+def test_steam_launch_without_a_client_is_a_clear_error():
+    real_which = clip_record.shutil.which
+    clip_record.shutil.which = lambda n: None
+    try:
+        try:
+            clip_record.cs2_steam_launch_args('/nowhere/steamapps/common/x', 'c')
+        except clip_record.ClipError as e:
+            ok('Steam' in str(e), 'names what is missing')
+        else:
+            ok(False, 'must raise when there is no Steam client')
+    finally:
+        clip_record.shutil.which = real_which
+
+
+def test_steam_session_outlives_its_launcher():
+    # `steam -applaunch` exits at once; the game is what has to be tracked.
+    real_running = clip_record.cs2_is_running
+    try:
+        proc = _FakeProc()
+        _with_session(proc, 51000, 'x.dem')
+        clip_record._WATCH_SESSION.update(via_steam=True,
+                                          launched_at=clip_record.time.monotonic())
+        proc.exit()
+        clip_record.cs2_is_running = lambda *a, **k: False
+        eq(clip_record.watch_session_port(), 51000,
+           'inside the startup grace the game may simply not be up yet')
+        clip_record._WATCH_SESSION['launched_at'] = (
+            clip_record.time.monotonic() - clip_record.STEAM_STARTUP_GRACE - 1)
+        eq(clip_record.watch_session_port(), None, 'past it, no cs2 means no session')
+        clip_record.cs2_is_running = lambda *a, **k: True
+        eq(clip_record.watch_session_port(), 51000, 'a running cs2 keeps it alive')
+    finally:
+        clip_record.cs2_is_running = real_running
+        _with_session(None, None, None)
+        clip_record._WATCH_SESSION.update(via_steam=False, launched_at=0.0)
+
+
+def test_linux_cs2_candidates_read_extra_steam_libraries():
+    import tempfile
+    with tempfile.TemporaryDirectory() as home:
+        steamapps = os.path.join(home, '.local', 'share', 'Steam', 'steamapps')
+        os.makedirs(steamapps)
+        with open(os.path.join(steamapps, 'libraryfolders.vdf'), 'w') as f:
+            f.write('"libraryfolders"\n{\n\t"1"\n\t{\n\t\t"path"\t\t"/mnt/games/SteamLibrary"\n\t}\n}\n')
+        cands = clip_record.linux_cs2_candidates(home=home)
+        ok(os.path.join('/mnt/games/SteamLibrary', 'steamapps', 'common',
+                        'Counter-Strike Global Offensive') in cands,
+           'a second library from libraryfolders.vdf is probed')
+        eq(len(cands), len(set(cands)), 'no duplicates')
 
 
 for _fn in list(globals().values()):

@@ -176,6 +176,56 @@ def test_assets_route_serves_assets_dir():
     r.close()
 
 
+def test_terminal_command_wraps_the_app_and_holds_the_window_open():
+    have = {'gnome-terminal': '/usr/bin/gnome-terminal', 'xterm': '/usr/bin/xterm'}
+    which = have.get
+    cmd = desktop.terminal_command(['/opt/CS2Viewer'], {'DISPLAY': ':0'}, which)
+    eq(cmd[:2], ['/usr/bin/gnome-terminal', '--'], 'uses the first terminal it knows')
+    eq(cmd[-1], '/opt/CS2Viewer', 'the app is the last argument, for "$0"')
+    ok('Press Enter to close' in cmd[cmd.index('-c') + 1],
+       'the window stays open after the app exits, so "stopped" is visible')
+    eq(desktop.terminal_command(['x'], {'DISPLAY': ':0', 'TERMINAL': 'xterm'}, which)[:2],
+       ['/usr/bin/xterm', '-e'], '$TERMINAL is preferred when known')
+    eq(desktop.terminal_command(['x'], {'DISPLAY': ':0', 'TERMINAL': 'weirdterm'}, which)[0],
+       '/usr/bin/gnome-terminal', 'an unknown $TERMINAL is skipped, not guessed at')
+    eq(desktop.terminal_command(['x'], {}, which), None, 'no display -> no terminal')
+    eq(desktop.terminal_command(['x'], {'DISPLAY': ':0'}, {}.get), None,
+       'no emulator installed -> None, the app just runs as before')
+
+
+def test_relaunch_in_terminal_only_when_frozen_linux_without_a_tty():
+    real_frozen, real_which = desktop.paths.FROZEN, desktop.shutil.which
+    real_popen, real_stdin, real_stderr = desktop.subprocess.Popen, sys.stdin, sys.stderr
+    class _NoTty:
+        def isatty(self):
+            return False
+    launched = []
+    desktop.shutil.which = lambda n: '/usr/bin/xterm' if n == 'xterm' else None
+    desktop.subprocess.Popen = lambda cmd, **kw: launched.append((cmd, kw))
+    sys.stdin = sys.stderr = _NoTty()
+    env = {'DISPLAY': ':0'}
+    try:
+        desktop.paths.FROZEN = False
+        ok(not desktop.relaunch_in_terminal(['a'], env), 'a checkout run is left alone')
+        desktop.paths.FROZEN = True
+        ok(desktop.relaunch_in_terminal(['a'], env) == sys.platform.startswith('linux'),
+           'frozen Linux with no terminal relaunches itself')
+        if sys.platform.startswith('linux'):
+            eq(launched[-1][1]['env'][desktop.TERMINAL_GUARD_ENV], '1',
+               'the child is marked so it cannot relaunch again')
+            ok(not desktop.relaunch_in_terminal(['a'], dict(env, **{desktop.TERMINAL_GUARD_ENV: '1'})),
+               'the guard stops a relaunch loop')
+            ok(not desktop.relaunch_in_terminal(['a'], dict(env, CS2VIEWER_NO_TERMINAL='1')),
+               'the opt-out is honoured')
+            n = len(launched)
+            sys.stdin = sys.stderr = type('T', (), {'isatty': lambda self: True})()
+            ok(not desktop.relaunch_in_terminal(['a'], env) and len(launched) == n,
+               'already in a terminal -> nothing to do')
+    finally:
+        desktop.paths.FROZEN, desktop.shutil.which = real_frozen, real_which
+        desktop.subprocess.Popen, sys.stdin, sys.stderr = real_popen, real_stdin, real_stderr
+
+
 def test_save_demo_map_is_atomic():
     app = _app()
     if not app:

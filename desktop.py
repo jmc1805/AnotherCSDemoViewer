@@ -20,11 +20,18 @@ a checkout too. The order below is load-bearing:
 
 If no window can be made - no WebView2 runtime, or no GUI toolkit on Linux - the
 app opens the default browser and keeps serving, and says how to stop it.
+
+On Linux the app's terminal is how you see that it is running and stop it. When
+the frozen build is started with no terminal attached (double-clicked in a file
+manager), main() re-launches itself inside one that stays open after the app
+exits, so "stopped" is something you can read rather than a window that vanishes.
 """
 import logging
 import logging.handlers
 import os
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -43,6 +50,79 @@ LOCK_PATH = os.path.join(paths.DATA_DIR, 'desktop.lock')
 PORT_PATH = os.path.join(paths.DATA_DIR, 'desktop.port')
 
 log = logging.getLogger('cs2viewer.desktop')
+
+
+# ── 0. a terminal to watch it in (Linux) ─────────────────────────────────────
+
+# (executable, args that put the rest of the command line inside the terminal).
+# Tried in order after $TERMINAL. Each one takes its own dialect for "run this":
+# `-e` is not universal (gnome-terminal dropped it, xfce4-terminal wants -x).
+TERMINALS = (
+    ('x-terminal-emulator', ['-e']),
+    ('ptyxis', ['--']),
+    ('gnome-terminal', ['--']),
+    ('kgx', ['-e']),
+    ('konsole', ['-e']),
+    ('xfce4-terminal', ['-x']),
+    ('kitty', []),
+    ('alacritty', ['-e']),
+    ('foot', []),
+    ('wezterm', ['start', '--']),
+    ('xterm', ['-e']),
+)
+TERMINAL_GUARD_ENV = 'CS2VIEWER_IN_TERMINAL'
+
+# Runs the app, then holds the window open so the exit is visible.
+_TERMINAL_WRAPPER = ('"$0" "$@"; status=$?; echo; '
+                     'echo "%s stopped (exit code $status). Press Enter to close."; '
+                     'read _' % TITLE)
+
+
+def terminal_command(argv, env=None, which=shutil.which):
+    """argv that runs `argv` inside a terminal emulator, or None when there is
+    no display or no terminal to be found. $TERMINAL wins when it names a
+    terminal this knows the syntax of; an unknown one is skipped rather than
+    guessed at, since a wrong flag opens a window that runs nothing."""
+    env = os.environ if env is None else env
+    if not (env.get('DISPLAY') or env.get('WAYLAND_DISPLAY')):
+        return None
+    known = dict(TERMINALS)
+    order = [t for t, _ in TERMINALS]
+    preferred = os.path.basename(env.get('TERMINAL') or '')
+    if preferred in known:
+        order.remove(preferred)
+        order.insert(0, preferred)
+    for name in order:
+        exe = which(name)
+        if exe:
+            return [exe] + known[name] + ['sh', '-c', _TERMINAL_WRAPPER] + list(argv)
+    return None
+
+
+def relaunch_in_terminal(argv=None, env=None):
+    """If this is a frozen Linux build with no terminal attached, start a copy
+    of itself in one and return True (the caller then exits). False means carry
+    on in this process: already in a terminal, not Linux, not frozen, opted out
+    with CS2VIEWER_NO_TERMINAL, or no terminal emulator available - in which
+    case the app still runs, as it did before."""
+    env = os.environ if env is None else env
+    if not (sys.platform.startswith('linux') and paths.FROZEN):
+        return False
+    if env.get('CS2VIEWER_NO_TERMINAL') or env.get(TERMINAL_GUARD_ENV):
+        return False
+    if any(getattr(f, 'isatty', lambda: False)() for f in (sys.stdin, sys.stderr)):
+        return False
+    cmd = terminal_command([sys.executable] + list(sys.argv[1:] if argv is None else argv), env)
+    if not cmd:
+        return False
+    child_env = dict(env, **{TERMINAL_GUARD_ENV: '1'})   # never relaunch twice
+    try:
+        subprocess.Popen(cmd, env=child_env, start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+    return True
 
 
 # ── 1. logging ────────────────────────────────────────────────────────────────
@@ -272,6 +352,8 @@ def show_running_instance():
 
 
 def main():
+    if relaunch_in_terminal():
+        return
     os.makedirs(paths.DATA_DIR, exist_ok=True)
     setup_logging()
     log.info('%s starting - data dir %s, frozen=%s', TITLE, paths.DATA_DIR, paths.FROZEN)

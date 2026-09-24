@@ -123,10 +123,10 @@
         </p>
         <dl class="kv" style="margin-top:0.8em">
             <dt>CS2 game directory</dt><dd><span class="pick-row"><input type="text" id="cs2-game-dir" class="cp-input"
-                value="{{ cs2_game_dir or '' }}" placeholder="C:\...\Counter-Strike Global Offensive"><button
+                value="{{ cs2_game_dir or '' }}" placeholder="{{ cs2_dir_placeholder }}"><button
                 type="button" class="cp-btn pick-path" data-for="cs2-game-dir" data-pick="folder" hidden>Browse…</button></span>
                 <span class="hint" style="margin:0.2em 0 0">The CS2 install dir - the one containing
-                    <code>game\bin\win64\cs2.exe</code> and <code>game\csgo\pak01_dir.vpk</code>.</span></dd>
+                    <code>{{ cs2_exe_rel }}</code> and <code>game/csgo/pak01_dir.vpk</code>.</span></dd>
         </dl>
         <p class="hint">
             <button type="button" id="cs2dir-autodetect" class="cp-btn">Auto-detect</button>
@@ -378,7 +378,7 @@ else window.addEventListener('pywebviewready', enablePathPickers, { once: true }
 function cs2dirStatus(d) {
     const el = document.getElementById('cs2dir-status');
     el.className = d.cs2_found ? 'yes' : 'no';
-    el.textContent = d.cs2_found ? 'found' : (d.cs2_game_dir ? 'set, but no cs2.exe found there' : 'not configured');
+    el.textContent = d.cs2_found ? 'found' : (d.cs2_game_dir ? 'set, but no CS2 executable found there' : 'not configured');
     document.getElementById('cs2-game-dir').value = d.cs2_game_dir || '';
 }
 

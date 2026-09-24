@@ -1340,6 +1340,10 @@ def settings():
                            clip_risk_notice=clip_record.RISK_NOTICE,
                            source2viewer_cli=_load_text_setting(_SOURCE2VIEWER_CLI_PATH),
                            cs2_game_dir=clip_settings['cs2_game_dir'],
+                           cs2_exe_rel=clip_record.cs2_exe_path('').lstrip('/\\'),
+                           cs2_dir_placeholder=('~/.local/share/Steam/steamapps/common/Counter-Strike Global Offensive'
+                                                if clip_record.IS_LINUX else
+                                                r'C:\...\Counter-Strike Global Offensive'),
                            asset_kinds=paths.ASSET_KINDS,
                            nav_active='settings')
 
